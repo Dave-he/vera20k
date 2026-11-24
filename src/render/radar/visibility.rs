@@ -74,8 +74,8 @@ fn radar_get_height_leptons(
                 .then(|| terrain.cell(rx as u16, ry as u16))
                 .flatten()
         })
-        .and_then(|cell| {
-            crate::util::lepton::ground_height_leptons(cell.level, cell.slope_type, x, y).ok()
+        .map(|cell| {
+            crate::util::lepton::ground_height_leptons_clamped(cell.level, cell.slope_type, x, y)
         })
         .unwrap_or_else(|| {
             i32::from(entity.position().z() as i8)
@@ -1284,7 +1284,7 @@ impl RadarFacts {
         }
     }
 
-    fn location(&self) -> crate::sim::components::DriveCoord {
+    pub(crate) fn location(&self) -> crate::sim::components::DriveCoord {
         let [x, y, z] = self.location;
         crate::sim::components::DriveCoord { x, y, z }
     }
