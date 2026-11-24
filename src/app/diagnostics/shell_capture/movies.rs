@@ -514,7 +514,13 @@ impl MoviesCapture {
                     && matches!(
                         state.frontend.screen,
                         GameScreen::Loading | GameScreen::InGame
-                    )),
+                    ))
+                // A mission whose result was admitted leaves the in-game
+                // route for the victory tail; the trace is finished.
+                || self
+                    .opening
+                    .as_ref()
+                    .is_some_and(|opening| opening.mission_ended(state)),
             "movies capture left its admitted shell/loading route"
         );
         ensure!(
@@ -1570,13 +1576,13 @@ impl MoviesCapture {
                 }
                 CampaignStartTarget::InitialSaved => Ok(false),
                 CampaignStartTarget::Opening(_) => {
+                    let opening = self.opening.as_ref().context("opening capture missing")?;
                     if state.frontend.screen != GameScreen::InGame {
-                        return Ok(false);
+                        // The mission whose result was admitted left the
+                        // in-game route for the victory tail.
+                        return Ok(opening.mission_ended(state));
                     }
-                    self.opening
-                        .as_ref()
-                        .context("opening capture missing")?
-                        .ready(state)
+                    opening.ready(state)
                 }
                 CampaignStartTarget::AbortReturn => unreachable!("handled above"),
                 // The restart driver takes over at the first live frame.
