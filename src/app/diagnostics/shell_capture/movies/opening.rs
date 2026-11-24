@@ -453,7 +453,7 @@ impl OpeningCapture {
                             &self.target,
                             &error,
                             sim,
-                            local_owner(sim, state),
+                            sim.session().current_house(),
                         )
                     })
                     .unwrap_or(false);
@@ -1388,12 +1388,9 @@ fn trace_stops_on_outcome_frame(
         return false;
     };
     match error {
-        // The frame that admits the result advances no tick. The House holds
-        // the request it admitted, and the session routes the result once
-        // the wait ends; either one says the mission's result is in.
-        ExactStepError::TickDelta { actual: 0 } => {
-            trace_outcome_for(sim, owner).is_some() || sim.pending_outcome_wait().is_some()
-        }
+        // The outcome frame advances no tick, including while the House
+        // waits for Vox before publishing its request to the session.
+        ExactStepError::TickDelta { actual: 0 } => trace_outcome_for(sim, owner).is_some(),
         // The app left the in-game route, which it does once it routed the
         // result.
         ExactStepError::ScreenNotInGame => routed_outcome_for(sim, owner).is_some(),
@@ -1401,21 +1398,10 @@ fn trace_stops_on_outcome_frame(
     }
 }
 
-/// The local House's owner id in the installed simulation.
-fn local_owner(sim: &Simulation, state: &AppState) -> Option<InternedId> {
-    crate::app::input::commands::preferred_local_owner_name(state)
-        .and_then(|name| sim.interner().get(&name))
-}
-
-/// The local House's campaign outcome, in whichever phase it is.
-///
-/// The session routes the result and keeps it; the House's own flag
-/// describes the request it still holds. House4F8657 clears `Won` after the
-/// Vox wait, so a House flag alone never shows a routed result.
+/// The local player's campaign result once HouseClass::Update admits it.
 fn trace_outcome(state: &AppState) -> Option<&'static str> {
     let sim = &state.match_state.sim_runtime.runtime()?.simulation;
-    let owner = local_owner(sim, state)?;
-    trace_outcome_for(sim, owner)
+    trace_outcome_for(sim, sim.session().current_house()?)
 }
 
 /// The result the session routed for one owner.
@@ -1424,33 +1410,25 @@ fn trace_outcome(state: &AppState) -> Option<&'static str> {
 /// (Main_Game 0x0048CE8A..0x0048CEA1): the session owns the request after
 /// the House's Vox wait.
 fn routed_outcome_for(sim: &Simulation, owner: InternedId) -> Option<&'static str> {
+    let outcome = sim.ready_outcome_for_owner(owner)?;
+    Some(outcome_name(outcome.kind))
+}
+
+fn outcome_name(kind: crate::sim::house_state::HouseOutcomeKind) -> &'static str {
     use crate::sim::house_state::HouseOutcomeKind;
-    match sim
-        .ready_outcome_for_owner(owner)
-        .map(|outcome| outcome.kind)
-    {
-        Some(HouseOutcomeKind::Victory) => Some("won"),
-        Some(HouseOutcomeKind::Defeat) => Some("lost"),
-        None => None,
+    match kind {
+        HouseOutcomeKind::Victory => "won",
+        HouseOutcomeKind::Defeat => "lost",
     }
 }
 
-/// The result the local House still holds, before the session routes it.
-fn pending_outcome_for(sim: &Simulation, owner: InternedId) -> Option<&'static str> {
-    let house = sim.houses().get(&owner)?;
-    if house.has_won() {
-        Some("won")
-    } else if house.has_lost() {
-        Some("lost")
-    } else {
-        None
-    }
-}
-
-/// The mission's outcome: the routed result, or the request the House holds
-/// while the outcome waits.
+/// HouseClass::Update 0x004F85BE/0x004F86FE enters the Vox wait only
+/// after the result timer and AllowWin checks admit the request.
 fn trace_outcome_for(sim: &Simulation, owner: InternedId) -> Option<&'static str> {
-    routed_outcome_for(sim, owner).or_else(|| pending_outcome_for(sim, owner))
+    if sim.session().current_house() != Some(owner) {
+        return None;
+    }
+    routed_outcome_for(sim, owner).or_else(|| sim.pending_outcome_wait().map(outcome_name))
 }
 
 /// End-of-trace House summary: live, non-limbo objects per category.
@@ -1532,6 +1510,13 @@ mod tests {
     #[test]
     fn a_trigger_trace_stops_on_the_outcome_frame_and_other_captures_do_not() {
         let (mut runtime, owner, mut vox) = waiting_mission();
+        assert_eq!(trace_outcome_for(&runtime.simulation, owner), None);
+        assert!(!trace_stops_on_outcome_frame(
+            &trace(),
+            &ExactStepError::TickDelta { actual: 0 },
+            &runtime.simulation,
+            Some(owner),
+        ));
         let first = runtime
             .advance_frame(
                 &[],
@@ -1542,6 +1527,7 @@ mod tests {
             .unwrap();
         assert!(first.outcome_waiting);
         let sim = &runtime.simulation;
+        assert_eq!(trace_outcome_for(sim, owner), Some("won"));
 
         // The frame that admits the result advances no tick: the trace stops
         // there instead of failing the step.
