@@ -355,6 +355,10 @@ impl App {
     ) {
         use crate::ui::campaign_score_shell::CampaignScorePage;
 
+        // The first-paint slide for StandaloneScore (0x006C8FF0) needs the
+        // shell chrome that the match released. Restore it before publishing
+        // the result screen so the slide driver sees the first paint.
+        Self::ensure_main_menu_shell_chrome(state);
         state.frontend.score_page = None;
         state.frontend.score_art = None;
         Self::prepare_campaign_score_art(state, model.side);
