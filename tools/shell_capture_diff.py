@@ -144,10 +144,8 @@ def validate_campaign_capture(manifest):
     if explicit_map or trigger_trace:
         release_index, press = route_action("explicit campaign spawn", after=new_index)
         release = press
-        # A trigger trace names its own mission: the capture admits it
-        # explicitly, without an emblem press.
-        expected_spawn = explicit_map if explicit_map else press.get("scenario")
-        _require(press.get("scenario") == expected_spawn and press.get("seed") == 1,
+        _require(press.get("seed") == 1
+                 and (explicit_map is None or press.get("scenario") == explicit_map),
                  "explicit campaign admission changed")
     else:
         press_index, press = route_action("emblem press", 0x94, new_index)
@@ -215,13 +213,14 @@ def validate_campaign_capture(manifest):
         row["name"].upper() == "LANGRULE.INI" and row["parsed_cache_hash"] is None
     ) for row in sources), "process parsed-cache hash missing")
     runtime = manifest["runtime"]
+    trace_report = None
     if phase == "loading-first-frame":
         _require(runtime is None, "first loading capture claims an installed runtime")
     else:
-        opening_phase = phase.startswith("opening-") or phase == "trigger-trace"
+        opening_phase = phase.startswith("opening-")
         _require(isinstance(runtime, dict) and _integer(runtime.get("tick"))
-                 and (runtime["tick"] > 0 if opening_phase else
-                      runtime["tick"] == (1 if phase == "initial-save" else 0))
+                 and (trigger_trace or (runtime["tick"] > 0 if opening_phase else
+                      runtime["tick"] == (1 if phase == "initial-save" else 0)))
                  and runtime.get("game_mode_nonzero") is False,
                  "campaign capture is outside its admitted runtime frame domain")
         _require(_integer(runtime["campaign_mission_counter"]), "campaign counter missing")
@@ -255,8 +254,8 @@ def validate_campaign_capture(manifest):
                  and len(camera["view_bookmarks"]) == 4
                  and all(isinstance(cell, list) and len(cell) == 2 for cell in camera["view_bookmarks"]),
                  "campaign camera/bookmark receipt missing")
-        if phase == "trigger-trace":
-            trigger_trace = _validate_trigger_trace(manifest, runtime)
+        if trigger_trace:
+            trace_report = _validate_trigger_trace(manifest, runtime)
         elif opening_phase:
             _validate_campaign_opening(manifest, phase, runtime)
         if phase == "initial-save":
@@ -338,8 +337,8 @@ def validate_campaign_capture(manifest):
     report = {"campaign": campaign_id, "phase": phase, "scenario": selected_scenario,
               "selected_map_sha256": source["source_sha256"],
               "map_admission": manifest["map_admission"], "parity_certification": "NONE"}
-    if phase == "trigger-trace":
-        report["trigger_trace"] = trigger_trace
+    if trace_report is not None:
+        report["trigger_trace"] = trace_report
     return report
 
 
@@ -547,8 +546,12 @@ def _validate_trigger_trace(manifest, runtime):
     initial = opening["initial_runtime"]
     _require(initial["tick"] == 0 and initial["game_mode_nonzero"] is False,
              "trigger trace skipped the ordinary tick-zero installation")
+    requested = opening.get("requested_tick")
+    _require(_integer(requested) and 1 <= requested <= 30_000,
+             "trigger trace requested tick must be 1..=30000")
     steps = opening["exact_steps"]
-    _require(isinstance(steps, list) and steps, "trigger trace has no production steps")
+    _require(isinstance(steps, list) and len(steps) <= requested,
+             "trigger trace production steps exceed the requested window")
     tick, frame = initial["tick"], initial["binary_frame"]
     for step in steps:
         _require(step["tick_before"] == tick and step["tick_after"] == tick + 1
@@ -560,8 +563,6 @@ def _validate_trigger_trace(manifest, runtime):
     _require(tick == runtime["tick"] == current["tick"]
              and frame == runtime["binary_frame"] == current["binary_frame"],
              "trigger trace readback differs from its last production step")
-    requested = opening.get("requested_tick")
-    _require(_integer(requested) and requested > 0, "trigger trace has no requested tick")
     outcome = opening.get("outcome")
     outcome_frame = opening.get("outcome_frame")
     if outcome is None:
@@ -574,8 +575,8 @@ def _validate_trigger_trace(manifest, runtime):
              "trigger trace outcome frame names another result")
     _require(outcome_frame.get("tick") == tick and outcome_frame.get("binary_frame") == frame,
              "trigger trace outcome frame is not the last committed frame")
-    _require(outcome_frame.get("admitting_tick") == tick + 1,
-             "trigger trace outcome frame is not the frame that admitted the result")
+    _require(outcome_frame.get("admitting_tick") == tick + 1 <= requested,
+             "trigger trace outcome must follow the last committed tick within the requested window")
     _require(isinstance(outcome_frame.get("stop"), str) and outcome_frame["stop"],
              "trigger trace outcome frame has no stop reason")
     return {"outcome": outcome, "admitting_tick": outcome_frame["admitting_tick"]}

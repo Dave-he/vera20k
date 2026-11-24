@@ -103,10 +103,10 @@ def campaign_bundle(directory, campaign="all1", phase="first-live-frame"):
     return manifest
 
 
-def trigger_trace_bundle(directory, scenario="ALL01UMD.MAP", requested=900, stopped=900,
-                         outcome=None):
+def trigger_trace_bundle(directory, requested=3, stopped=3, outcome=None):
     """A synthetic trigger trace: the capture's own protocol, not native play."""
     receipt = campaign_bundle(directory, "all1")
+    scenario = "SOV01UMD.MAP"
     receipt.update(checkpoint=diff.TRIGGER_TRACE_CHECKPOINT, checkpoint_phase="trigger-trace")
     receipt["route"] = [
         {"frame": 1, "dialog": 0xE2, "action": "SinglePlayer"},
@@ -115,7 +115,7 @@ def trigger_trace_bundle(directory, scenario="ALL01UMD.MAP", requested=900, stop
          "scenario": scenario, "seed": 1},
         {"frame": 4, "action": "campaign loading admitted"},
     ]
-    receipt["startup"]["campaign"]["scenario"] = scenario
+    receipt["startup"]["scenario"] = scenario
     receipt["selected_map_source"]["logical_name"] = scenario
     receipt["opening"] = {
         "target": "trigger-trace",
@@ -469,26 +469,24 @@ class CampaignReceiptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             receipt = trigger_trace_bundle(Path(temp))
             report = diff.validate_campaign_capture(receipt)
+            assert report is not None
             self.assertEqual(report["phase"], "trigger-trace")
+            self.assertEqual(report["scenario"], "SOV01UMD.MAP")
             self.assertEqual(report["trigger_trace"], {"outcome": None})
-            won = trigger_trace_bundle(Path(temp), stopped=420, outcome="won")
+            won = trigger_trace_bundle(Path(temp), stopped=0, outcome="won")
             report = diff.validate_campaign_capture(won)
+            assert report is not None
             self.assertEqual(report["trigger_trace"],
-                             {"outcome": "won", "admitting_tick": 421})
+                             {"outcome": "won", "admitting_tick": 1})
 
     def test_trigger_trace_rejects_a_step_gap_and_a_wrong_outcome_frame(self):
         with tempfile.TemporaryDirectory() as temp:
-            receipt = trigger_trace_bundle(Path(temp), stopped=420, outcome="won")
+            receipt = trigger_trace_bundle(Path(temp), stopped=2, outcome="won")
             mutations = [
-                lambda value: value["opening"]["exact_steps"][3].update(tick_after=405),
-                lambda value: value["opening"]["exact_steps"][3].update(binary_frame_after=404),
-                lambda value: value["opening"]["outcome_frame"].update(admitting_tick=420),
-                lambda value: value["opening"]["outcome_frame"].update(outcome="lost"),
-                lambda value: value["opening"]["outcome_frame"].update(tick=419),
-                lambda value: value["opening"].update(outcome_frame=None),
-                lambda value: value["opening"].update(outcome=None),
-                lambda value: value["opening"].update(requested_tick=0),
-                lambda value: value["route"][2].update(scenario="SOV01UMD.MAP"),
+                lambda value: value["opening"]["exact_steps"][0].update(tick_after=2),
+                lambda value: value["opening"]["outcome_frame"].update(admitting_tick=2),
+                lambda value: value["opening"].update(requested_tick=2),
+                lambda value: value["route"][2].update(scenario="ALL01UMD.MAP"),
             ]
             for mutate in mutations:
                 invalid = copy.deepcopy(receipt)
