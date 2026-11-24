@@ -526,6 +526,56 @@ impl App {
                 .csf_label(
                     "TXT_SCENARIO_TOO_SMALL",
                     "This map has a %d player max. The max includes human and computer players.",
+            Err(err) => {
+                if let Some(modal) = Self::skirmish_validation_modal_for_error(
+                    state.process_assets.csf.as_ref(),
+                    &err,
+                ) {
+                    Self::show_skirmish_validation_modal(state, modal);
+                    state.platform.window.request_redraw();
+                } else {
+                    log::warn!("Could not start skirmish shell session: {err:?}");
+                }
+            }
+        }
+    }
+
+    fn skirmish_shell_label(
+        csf: Option<&crate::assets::csf_file::CsfFile>,
+        key: &str,
+        fallback: &str,
+    ) -> String {
+        crate::i18n::label(csf, key, fallback)
+    }
+
+    fn skirmish_validation_modal_for_error(
+        csf: Option<&crate::assets::csf_file::CsfFile>,
+        err: &crate::skirmish_launch::LaunchValidationError,
+    ) -> Option<crate::ui::skirmish_shell::SkirmishValidationModalState> {
+        let ok = Self::skirmish_shell_label(csf, "TXT_OK", "OK");
+        let message = match err {
+            crate::skirmish_launch::LaunchValidationError::MapCapacityExceeded {
+                capacity, ..
+            } => {
+                let template = Self::skirmish_shell_label(
+                    csf,
+                    "TXT_SCENARIO_TOO_SMALL",
+                    "This map has a %d player max. The max includes human and computer players.",
+                );
+                template.replace("%d", &capacity.to_string())
+            }
+            crate::skirmish_launch::LaunchValidationError::NoEnabledOpponent => {
+                Self::skirmish_shell_label(
+                    csf,
+                    "TXT_NEED_AT_LEAST_TWO_PLAYERS",
+                    "You need at least two players to start the game!",
+                )
+            }
+            crate::skirmish_launch::LaunchValidationError::SameExplicitTeam { .. } => {
+                Self::skirmish_shell_label(
+                    csf,
+                    "TXT_CANNOT_ALLY",
+                    "Must have more than one team to start a game!",
                 )
                 .replace("%d", &capacity.to_string()),
             Error::NoEnabledOpponent => state.csf_label(
@@ -539,6 +589,15 @@ impl App {
             // VERA: map archives are optional, so the list can be empty.
             Error::NoSelectedMap => crate::i18n::tr("VERA:NoMapsFound"),
             _ => return log::warn!("Could not start skirmish shell session: {err:?}"),
+            crate::skirmish_launch::LaunchValidationError::NoSelectedMap => {
+                crate::i18n::tr("VERA:NoMapsFound")
+            }
+            // VERA: the mode roster comes from the game's MPModesMD.INI, which
+            // may be missing or unusable; Start Game then says so.
+            crate::skirmish_launch::LaunchValidationError::NoSelectedMode { .. } => {
+                crate::i18n::tr("VERA:NoModesFound")
+            }
+            _ => return None,
         };
         let ok = state.csf_label("TXT_OK", "OK");
         let shell = &mut state.frontend.skirmish_shell_state;
@@ -1596,7 +1655,6 @@ impl App {
 
 #[cfg(all(test, tests_app))]
 mod tests {
-    #[cfg(feature = "verax")]
     use super::*;
 
     /// A loose map the chooser lists: the retail `.yrm` branch reads
@@ -1693,5 +1751,37 @@ mod tests {
             App::remap_record_index(Some("BRAVO.YRM"), Some(0), &[]),
             None
         );
+    }
+
+    /// A map the shell lists: the start only needs a name and a capacity.
+    fn listed_map() -> crate::map::scenario_menu::MapMenuEntry {
+        crate::map::scenario_menu::MapMenuEntry {
+            file_name: "TEST.MAP".to_owned(),
+            display_name: "Test".to_owned(),
+            author: None,
+            preview: crate::map::preview::PreviewSection::default(),
+            multiplayer_start_waypoints: Vec::new(),
+            player_capacity: 8,
+            preview_source_bounds: None,
+        }
+    }
+
+    /// The mode roster comes from the game's MPModesMD.INI, which may be
+    /// missing or unusable. Start Game then says so instead of doing
+    /// nothing.
+    #[test]
+    fn an_empty_mode_roster_says_the_modes_are_missing() {
+        let shell = crate::ui::skirmish_shell::SkirmishShellState::default();
+        let maps = [listed_map()];
+        let error = crate::ui::skirmish_shell::launch_session(&shell, &maps, &[], true)
+            .expect_err("an empty roster has no mode to start on");
+        assert!(matches!(
+            error,
+            crate::skirmish_launch::LaunchValidationError::NoSelectedMode { .. }
+        ));
+        let modal = App::skirmish_validation_modal_for_error(None, &error)
+            .expect("the start must say what is missing");
+        assert_eq!(modal.message, crate::i18n::tr("VERA:NoModesFound"));
+        assert!(!modal.message.contains("MISSING"), "{}", modal.message);
     }
 }
