@@ -220,7 +220,7 @@ use crate::assets::bink_data::{
     BINK_INTER_QUANT, BINK_INTRA_QUANT, BINK_PATTERNS, BINK_RLELENS, BINK_SCAN, BINK_TREE_BITS,
     BINK_TREE_LENS, DC_START_BITS,
 };
-use crate::assets::bink_file::{BinkHeader, BinkVersion};
+use crate::assets::bink_file::{BinkHeader, BinkVersion, validate_dimensions};
 use crate::assets::error::AssetError;
 
 /// Bundle IDs for modern Bink (BIKi/BIKk).
@@ -238,6 +238,19 @@ enum Src {
     Run = 8,
 }
 const NB_SRC: usize = 9;
+
+/// The widest or tallest frame one BINK decoder accepts.
+///
+/// The frame planes and the block scratch are both sized from the header, so
+/// a damaged header that names any `u32` has to be refused before it is used.
+pub const MAX_BINK_FRAME_SIDE: u32 = 8192;
+
+/// The most block scratch one BINK decoder may hold.
+///
+/// The scratch is nine bundle planes over an 8x8 block grid: a 4K frame needs
+/// about 75 MB of it. The ceiling is VERA's own budget, not a native rule,
+/// and sits far above any retail movie.
+pub const MAX_BINK_SCRATCH_BYTES: usize = 256 * 1024 * 1024;
 
 /// YUV frame buffer; planes have their own strides (Y stride = rounded-up
 /// width, UV stride = rounded-up width/2).
@@ -260,8 +273,19 @@ pub enum ColorRange {
     Jpeg,
 }
 
+fn zeroed_buffer(bytes: usize, buffer: &'static str) -> Result<Vec<u8>, AssetError> {
+    let mut data = Vec::new();
+    data.try_reserve_exact(bytes)
+        .map_err(|_| AssetError::BinkAllocationFailed { buffer, bytes })?;
+    data.resize(bytes, 0);
+    Ok(data)
+}
+
 impl BinkFrame {
-    fn alloc(width: u32, height: u32, color_range: ColorRange) -> Self {
+    /// The frame's planes, allocated fallibly: a header that names a large
+    /// frame asks for more memory than a machine may have, and a movie that
+    /// cannot hold its own planes must be refused, not fatal.
+    fn alloc(width: u32, height: u32, color_range: ColorRange) -> Result<Self, AssetError> {
         // A scaled block writes 16x16 at an even block position
         // (`scale_block_8x8_to_16x16`, `fill_block` with 16), so each plane
         // holds whole 16-pixel blocks, as FFmpeg's padded frame buffers do. A
@@ -271,18 +295,29 @@ impl BinkFrame {
         // write then ran off the slice.
         let stride_y = ((width + 15) & !15) as usize;
         let stride_uv = (((width + 31) & !31) / 2) as usize;
-        let y_size = stride_y * ((height + 15) & !15) as usize;
-        let uv_size = stride_uv * (((height + 31) & !31) / 2) as usize;
-        Self {
+        let y_size = stride_y
+            .checked_mul(((height + 15) & !15) as usize)
+            .ok_or_else(|| bink_error("Bink frame plane size overflows"))?;
+        let uv_size = stride_uv
+            .checked_mul((((height + 31) & !31) / 2) as usize)
+            .ok_or_else(|| bink_error("Bink frame plane size overflows"))?;
+        Ok(Self {
             width,
             height,
             color_range,
-            y: vec![0u8; y_size].into_boxed_slice(),
+            y: zeroed_buffer(y_size, "luma plane")?.into_boxed_slice(),
             stride_y,
-            u: vec![0u8; uv_size].into_boxed_slice(),
+            u: zeroed_buffer(uv_size, "U chroma plane")?.into_boxed_slice(),
             stride_uv,
-            v: vec![0u8; uv_size].into_boxed_slice(),
-        }
+            v: zeroed_buffer(uv_size, "V chroma plane")?.into_boxed_slice(),
+        })
+    }
+}
+
+/// The error a BINK header earns by asking for what a machine cannot give.
+fn bink_error(reason: &str) -> AssetError {
+    AssetError::BinkError {
+        reason: reason.to_owned(),
     }
 }
 
@@ -332,18 +367,44 @@ impl BinkDecoder {
             });
         }
 
+        validate_dimensions(header.width, header.height)?;
+
         let color_range = match header.version {
             BinkVersion::BikK => ColorRange::Jpeg,
             _ => ColorRange::Mpeg,
         };
 
+        // The header alone sizes the block scratch and the frame planes, so
+        // its dimensions are checked before they are used: `width + 7`
+        // overflows a u32 for a damaged header, and a huge frame asks for
+        // gigabytes of scratch before a single frame is read.
+        if header.width > MAX_BINK_FRAME_SIDE || header.height > MAX_BINK_FRAME_SIDE {
+            return Err(AssetError::BinkError {
+                reason: format!(
+                    "Bink {}x{} is past the {MAX_BINK_FRAME_SIDE}-pixel frame side",
+                    header.width, header.height
+                ),
+            });
+        }
         let bw = ((header.width + 7) >> 3) as usize;
         let bh = ((header.height + 7) >> 3) as usize;
         let blocks = bw * bh;
         let total_bytes = blocks.saturating_mul(64 * NB_SRC);
-        let bundle_data = vec![0u8; total_bytes];
+        if total_bytes > MAX_BINK_SCRATCH_BYTES {
+            return Err(AssetError::BinkError {
+                reason: format!(
+                    "Bink {}x{} needs {total_bytes} bytes of block scratch, past the \
+                     {MAX_BINK_SCRATCH_BYTES}-byte budget",
+                    header.width, header.height
+                ),
+            });
+        }
+        // The block scratch is sized by the header alone, so a movie that
+        // cannot hold its own scratch does not play; it must not abort the
+        // process on a machine without that much memory.
+        let bundle_data = zeroed_buffer(total_bytes, "block scratch")?;
 
-        let block_per_bundle = blocks * 64;
+        let block_per_bundle = blocks.saturating_mul(64);
         let bundles: [Bundle; NB_SRC] = std::array::from_fn(|i| Bundle {
             len_bits: 0,
             tree: HuffmanTree::default(),
@@ -370,8 +431,8 @@ impl BinkDecoder {
             bundles,
             bundle_data,
             frame_num: 0,
-            cur: BinkFrame::alloc(header.width, header.height, color_range),
-            prev: BinkFrame::alloc(header.width, header.height, color_range),
+            cur: BinkFrame::alloc(header.width, header.height, color_range)?,
+            prev: BinkFrame::alloc(header.width, header.height, color_range)?,
             has_prev: false,
         })
     }
@@ -1707,14 +1768,73 @@ mod tests {
         assert_eq!(recovered.y[32..40], next);
     }
 
+    fn video_header(width: u32, height: u32) -> BinkHeader {
+        BinkHeader {
+            version: BinkVersion::BikI,
+            file_size: 1000,
+            num_frames: 1,
+            width,
+            height,
+            fps_num: 30,
+            fps_den: 1,
+            video_flags: 0,
+            num_audio_tracks: 0,
+            audio_tracks: vec![],
+            frame_index_offset: 0,
+        }
+    }
+
+    #[test]
+    fn decoder_allocates_zeroed_scratch_and_padded_frames() {
+        let decoder = BinkDecoder::new(&video_header(320, 200)).unwrap();
+        assert_eq!(decoder.bundle_data.len(), 576_000);
+        assert!(decoder.bundle_data.iter().all(|&byte| byte == 0));
+        for frame in [&decoder.cur, &decoder.prev] {
+            assert_eq!((frame.width, frame.height), (320, 200));
+            assert_eq!((frame.stride_y, frame.stride_uv), (320, 160));
+            assert_eq!(frame.y.len(), 320 * 208);
+            assert_eq!(frame.u.len(), 160 * 112);
+            assert_eq!(frame.v.len(), 160 * 112);
+            for plane in [&frame.y, &frame.u, &frame.v] {
+                assert!(plane.iter().all(|&byte| byte == 0));
+            }
+        }
+    }
+
+    #[test]
+    fn decoder_rejects_dimensions_outside_parser_bounds() {
+        for (width, height, expected) in [
+            (0, 1, "invalid width 0"),
+            (7681, 1, "invalid width 7681"),
+            (1, 0, "invalid height 0"),
+            (1, 4801, "invalid height 4801"),
+        ] {
+            let Err(AssetError::BinkError { reason }) =
+                BinkDecoder::new(&video_header(width, height))
+            else {
+                panic!("expected a dimension error for {width}x{height}");
+            };
+            assert_eq!(reason, expected);
+        }
+    }
+
     #[test]
     fn init_bundle_lengths_matches_ffmpeg_formula() {
+        let mut d = BinkDecoder::new(&video_header(320, 240)).unwrap();
+        let bw = (320u32 + 7) >> 3;
+        d.init_bundle_lengths(320, bw);
+        assert_eq!(d.bundles[Src::BlockTypes as usize].len_bits, 10);
+        assert_eq!(d.bundles[Src::SubBlockTypes as usize].len_bits, 10);
+    }
+
+    #[test]
+    fn a_damaged_header_is_refused_before_the_scratch_is_sized() {
         let h = crate::assets::bink_file::BinkHeader {
             version: BinkVersion::BikI,
             file_size: 1000,
             num_frames: 1,
-            width: 320,
-            height: 240,
+            width: u32::MAX,
+            height: u32::MAX,
             fps_num: 30,
             fps_den: 1,
             video_flags: 0,
@@ -1722,18 +1842,75 @@ mod tests {
             audio_tracks: vec![],
             frame_index_offset: 0,
         };
-        let mut d = BinkDecoder::new(&h).unwrap();
-        let bw = (320u32 + 7) >> 3;
-        d.init_bundle_lengths(320, bw);
-        assert_eq!(d.bundles[Src::BlockTypes as usize].len_bits, 10);
-        assert_eq!(d.bundles[Src::SubBlockTypes as usize].len_bits, 10);
+        let err = BinkDecoder::new(&h)
+            .err()
+            .expect("a damaged header is refused");
+        assert!(
+            matches!(err, AssetError::BinkError { .. }),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_header_past_the_scratch_budget_is_refused() {
+        // 1024x1024 fits the budget; 8192x3650 asks for nine bundle planes
+        // over a 1024x457 block grid, which is just past it.
+        let mut h = crate::assets::bink_file::BinkHeader {
+            version: BinkVersion::BikI,
+            file_size: 1000,
+            num_frames: 1,
+            width: 1024,
+            height: 1024,
+            fps_num: 30,
+            fps_den: 1,
+            video_flags: 0,
+            num_audio_tracks: 0,
+            audio_tracks: vec![],
+            frame_index_offset: 0,
+        };
+        assert!(BinkDecoder::new(&h).is_ok());
+        h.width = 8192;
+        h.height = 3650;
+        let err = BinkDecoder::new(&h)
+            .err()
+            .expect("a header past the budget is refused");
+        let AssetError::BinkError { reason } = err else {
+            panic!("expected a Bink error: {err:?}");
+        };
+        assert!(reason.contains("budget"), "unexpected reason: {reason}");
+    }
+
+    #[test]
+    fn a_header_past_the_frame_side_is_refused() {
+        // A frame side past the ceiling is refused before the frame planes
+        // and the block scratch are sized from it.
+        let h = crate::assets::bink_file::BinkHeader {
+            version: BinkVersion::BikI,
+            file_size: 1000,
+            num_frames: 1,
+            width: MAX_BINK_FRAME_SIDE + 1,
+            height: 16,
+            fps_num: 30,
+            fps_den: 1,
+            video_flags: 0,
+            num_audio_tracks: 0,
+            audio_tracks: vec![],
+            frame_index_offset: 0,
+        };
+        let err = BinkDecoder::new(&h)
+            .err()
+            .expect("a frame side past the ceiling is refused");
+        let AssetError::BinkError { reason } = err else {
+            panic!("expected a Bink error: {err:?}");
+        };
+        assert!(reason.contains("frame side"), "unexpected reason: {reason}");
     }
 
     /// A scaled block on the last block row of a 320x200 movie (25 luma and
     /// 13 chroma block rows, both odd) must fit the planes.
     #[test]
     fn planes_hold_a_scaled_block_on_an_odd_last_block_row() {
-        let mut frame = BinkFrame::alloc(320, 200, ColorRange::Mpeg);
+        let mut frame = BinkFrame::alloc(320, 200, ColorRange::Mpeg).unwrap();
         let luma_rows = (200u32 + 7) >> 3;
         assert_eq!(luma_rows % 2, 1);
         let base = ((luma_rows - 1) as usize) * 8 * frame.stride_y;
@@ -1847,5 +2024,46 @@ mod tests {
         // src[3,4] = src[3*8+4] = 28. Doubled into dst rows 6..8 cols 8..10.
         assert_eq!(dst[6 * 16 + 8], 28);
         assert_eq!(dst[7 * 16 + 9], 28);
+    }
+
+    #[test]
+    fn a_frame_too_large_to_hold_is_refused_instead_of_overflowing() {
+        // u32::MAX dimensions overflow the plane arithmetic. The header comes
+        // from a file, so it must come back as an error, not as a panic or an
+        // abort inside the allocator.
+        let err = BinkFrame::alloc(u32::MAX, u32::MAX, ColorRange::Mpeg)
+            .err()
+            .expect("a frame this size is refused");
+        let AssetError::BinkError { reason } = err else {
+            panic!("expected a Bink error: {err:?}");
+        };
+        assert!(
+            reason.contains("overflow") || reason.contains("plane memory"),
+            "unexpected reason: {reason}"
+        );
+    }
+
+    #[test]
+    fn a_movie_whose_own_scratch_cannot_be_had_is_refused() {
+        // The block scratch is sized by the header alone. A header that names
+        // an enormous frame must not take the process down with it.
+        let h = crate::assets::bink_file::BinkHeader {
+            version: BinkVersion::BikI,
+            file_size: 1000,
+            num_frames: 1,
+            width: u32::MAX,
+            height: u32::MAX,
+            fps_num: 30,
+            fps_den: 1,
+            video_flags: 0,
+            num_audio_tracks: 0,
+            audio_tracks: vec![],
+            frame_index_offset: 0,
+        };
+        let err = BinkDecoder::new(&h).err().expect("the movie is refused");
+        let AssetError::BinkError { reason } = err else {
+            panic!("expected a Bink error: {err:?}");
+        };
+        assert!(!reason.is_empty(), "the refusal says why");
     }
 }
