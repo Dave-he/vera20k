@@ -208,8 +208,7 @@ impl Simulation {
             y: centre.y,
             z: 0,
         };
-        location.z = query_ground_height(&cells, location)
-            .expect("direct strike ground query requires a supported native slope");
+        location.z = query_ground_height(&cells, location);
         let target = cells.lookup(cell);
         if cells.flags(target) & 0x100 != 0 {
             location.z = deck_surface_z(&cells, target, location.z);

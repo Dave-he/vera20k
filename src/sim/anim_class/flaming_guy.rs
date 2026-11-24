@@ -252,8 +252,7 @@ impl Simulation {
             if moved && let Some(terrain) = self.resolved_terrain.as_ref() {
                 let cells = NativeCellQuery::canonical(terrain);
                 let old_z = coord.z;
-                let ground =
-                    query_ground_height(&cells, point(coord)).expect("native runner ground slope");
+                let ground = query_ground_height(&cells, point(coord));
                 let cell = cells.lookup_world(coord.x, coord.y);
                 let fixed_deck = corrected_deck_z(terrain, cell);
                 let on_deck = if fixed_deck.is_some() {
@@ -267,8 +266,7 @@ impl Simulation {
                     ground
                 };
                 if !state.fall.falling() {
-                    let ground = query_ground_height(&cells, point(coord))
-                        .expect("native runner ground slope");
+                    let ground = query_ground_height(&cells, point(coord));
                     if coord.z >= deck_surface_z(&cells, cell, ground) {
                         let position = cells.coord(cell);
                         if cells.flags(cell) & 0x100 == 0
@@ -326,7 +324,6 @@ impl Simulation {
                 .as_ref()
                 .map(|terrain| {
                     query_ground_height(&NativeCellQuery::canonical(terrain), point(coord))
-                        .expect("native falling runner ground slope")
                 })
                 .unwrap_or(0);
             let landed = coord.z <= ground;

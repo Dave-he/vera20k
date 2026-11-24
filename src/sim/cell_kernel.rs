@@ -9,7 +9,7 @@ use crate::map::resolved_terrain::NativeCellQuery;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 #[cfg(any(test, feature = "test-support"))]
 use crate::util::lepton::BRIDGE_DECK_HEIGHT_LEPTONS;
-use crate::util::lepton::{GROUND_LEVEL_HEIGHT_LEPTONS, ground_height_leptons};
+use crate::util::lepton::{GROUND_LEVEL_HEIGHT_LEPTONS, ground_height_leptons_clamped};
 
 pub const LEPTONS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
 pub const CELL_CENTER_LEPTONS: i32 = crate::util::lepton::CELL_CENTER_LEPTON_I32;
@@ -337,7 +337,7 @@ fn cell_own_coords(
     Some(crate::sim::components::DriveCoord {
         x: point.x,
         y: point.y,
-        z: ground_height_leptons(level, slope, point.x, point.y).ok()?,
+        z: ground_height_leptons_clamped(level, slope, point.x, point.y),
     })
 }
 
@@ -498,6 +498,7 @@ pub fn select_infantry_subcell(
 #[cfg(all(test, tests_sim_c_g))]
 mod tests {
     use super::*;
+    use crate::util::lepton::ground_height_leptons;
 
     #[test]
     fn wall_overlay_prefix_matches_original_cell_queries() {

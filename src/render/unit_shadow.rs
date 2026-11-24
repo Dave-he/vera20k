@@ -57,15 +57,18 @@ fn height_over_cell(
     xyz: [i32; 3],
     on_bridge: bool,
     lookup: impl FnOnce([i16; 2]) -> DepthCell,
-) -> Option<(i32, DepthCell)> {
+) -> (i32, DepthCell) {
     let [x, y, z] = xyz;
     let cell = lookup([(x / 256) as i16, (y / 256) as i16]);
+    // `CellClass::GetGroundHeight @ 0x00578080` answers a height and never a
+    // failure, so a slope byte outside the native table reads as flat ground
+    // at the cell's level.
     let floor =
-        crate::util::lepton::ground_height_leptons(cell.level as u8, cell.ramp, x, y).ok()?;
+        crate::util::lepton::ground_height_leptons_clamped(cell.level as u8, cell.ramp, x, y);
     // OnBridge measures from the cell's deck: a retained fixed deck when it
     // has one, else the native floor plus four levels.
     let surface = if on_bridge { cell.deck_z(floor) } else { floor };
-    Some((z.wrapping_sub(surface), cell))
+    (z.wrapping_sub(surface), cell)
 }
 
 /// The Y of a Unit's `ILocomotion::Shadow_Point` (vt+0x30). Every locomotor
@@ -81,15 +84,16 @@ pub(crate) fn shadow_point_y(
     if fly {
         return Some(0);
     }
-    height_over_cell(xyz, on_bridge, lookup).map(|(height, _)| adjust_for_z_standard(height))
+    let (height, _) = height_over_cell(xyz, on_bridge, lookup);
+    Some(adjust_for_z_standard(height))
 }
 
 pub(crate) fn pose(
     context: UnitShadowContext,
     lookup: impl FnOnce([i16; 2]) -> DepthCell,
-) -> Option<UnitShadowPose> {
+) -> UnitShadowPose {
     let [x, y, z] = context.xyz;
-    let (height, cell) = height_over_cell(context.xyz, context.on_bridge, lookup)?;
+    let (height, cell) = height_over_cell(context.xyz, context.on_bridge, lookup);
     // The inherited Shadow_Point55A8C0 is added by Foot4DB0D0. Preserve
     // the body's projection and the point's separate integer conversion.
     let (sx, sy) = absolute_leptons_to_screen(x, y, z);
@@ -114,7 +118,7 @@ pub(crate) fn pose(
     } else {
         UnitShadowMask::Retained
     };
-    Some(UnitShadowPose {
+    UnitShadowPose {
         anchor: [sx, sy + point_y as f32],
         facing: crate::render::vxl_raster::voxel_facing_step_u16(context.primary_facing) * 8,
         slope: if context.on_bridge && cell.fixed_deck_z.is_some() {
@@ -126,7 +130,7 @@ pub(crate) fn pose(
         //73C4C8..73C4D5 adds one only on the positive-height arm. This
         //offset samples the elevated body surface; it does not move the quad.
         mask_offset: [0, point_y.wrapping_add(i32::from(height > 0))],
-    })
+    }
 }
 
 #[cfg(all(test, tests_render_s_z))]

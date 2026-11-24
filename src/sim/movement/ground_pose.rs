@@ -13,7 +13,7 @@ use crate::sim::world::ObjectSubstrate;
 use crate::sim::world::{FrameEffects, Simulation};
 use crate::util::fixed_math::SimFixed;
 use crate::util::lepton::{
-    BRIDGE_DECK_HEIGHT_LEPTONS, GROUND_LEVEL_HEIGHT_LEPTONS, ground_height_leptons,
+    BRIDGE_DECK_HEIGHT_LEPTONS, GROUND_LEVEL_HEIGHT_LEPTONS, ground_height_leptons_clamped,
 };
 
 /// World position in isometric cell coordinates plus sub-cell lepton offset.
@@ -161,7 +161,8 @@ impl Position {
     /// Without resolved terrain, the headless movement hosts that pass their
     /// PathGrid take the cell's level and slope from it. Otherwise (mapless
     /// fixtures) every lookup would be the Dummy cell, whose constructor ground is
-    /// flat level 0. An unsupported slope leaves Z unchanged.
+    /// flat level 0. A slope byte outside the native table reads as flat ground
+    /// at the cell's level.
     pub(crate) fn set_height(
         &mut self,
         on_bridge: bool,
@@ -174,10 +175,10 @@ impl Position {
             self.put_z(deck.wrapping_add(height));
             return;
         }
-        let ground = ground_at(world_xy, terrain, path_grid).unwrap_or(Ok(0));
-        if let Some(ground) = supported_ground(ground, world_xy) {
-            self.put_z(z_at_height(ground, height, on_bridge));
-        }
+        let Some(ground) = ground_at(world_xy, terrain, path_grid) else {
+            return;
+        };
+        self.put_z(z_at_height(ground, height, on_bridge));
     }
 
     /// Store the level of the cell the object has entered, of terrain level
@@ -350,7 +351,11 @@ impl Simulation {
 
 /// Map578080 through the caller's query identity. Input queries isolate Dummy;
 /// simulation callbacks use the canonical retained Dummy and its lookup order.
-pub fn query_ground_height(cells: &NativeCellQuery<'_>, point: DriveCoord) -> Result<i32, String> {
+///
+/// `CellClass::GetGroundHeight @ 0x00578080` answers a height and never a
+/// failure, so this does too: a slope byte outside the native table reads as
+/// flat ground at the cell's level ([`ground_height_leptons_clamped`]).
+pub fn query_ground_height(cells: &NativeCellQuery<'_>, point: DriveCoord) -> i32 {
     let cell = cells.lookup_world(point.x, point.y);
     ground_height_in_cell(cells, cell, point)
 }
@@ -359,25 +364,27 @@ fn ground_height_in_cell(
     cells: &NativeCellQuery<'_>,
     cell: NativeCellIdentity,
     point: DriveCoord,
-) -> Result<i32, String> {
+) -> i32 {
     let (level, slope) = cells.ground_fields(cell);
-    ground_height_leptons(level, slope, point.x, point.y)
-        .map_err(|error| format!("native ground query: {error:?}"))
+    ground_height_leptons_clamped(level, slope, point.x, point.y)
 }
 
 /// Surface Z in leptons for a caller that already knows its layer. Keep the
 /// Map578080 lookup and its Dummy identity even on a corrected bridge.
+///
+/// The ground is a height and never a failure (see [`query_ground_height`]),
+/// so this answers a Z for every cell too.
 pub fn query_surface_z(
     cells: &NativeCellQuery<'_>,
     point: DriveCoord,
     on_bridge: bool,
-) -> Result<i32, String> {
+) -> i32 {
     let cell = cells.lookup_world(point.x, point.y);
     if on_bridge && let Some(deck) = corrected_deck_z(cells.terrain(), cell) {
-        return Ok(deck);
+        return deck;
     }
-    let ground = ground_height_in_cell(cells, cell, point)?;
-    Ok(z_at_height(ground, 0, on_bridge))
+    let ground = ground_height_in_cell(cells, cell, point);
+    z_at_height(ground, 0, on_bridge)
 }
 
 /// Deck Z for a caller that samples ground before its separate bridge lookup
@@ -467,9 +474,9 @@ pub(crate) fn navigation_should_be_on_bridge(
         return Ok(false);
     }
     let head_cell = cells.lookup_world(navigation.x, navigation.y);
-    let head_ground = ground_height_in_cell(cells, head_cell, navigation)?;
+    let head_ground = ground_height_in_cell(cells, head_cell, navigation);
     let current_cell = cells.lookup_world(current.x, current.y);
-    let current_ground = ground_height_in_cell(cells, current_cell, current)?;
+    let current_ground = ground_height_in_cell(cells, current_cell, current);
     if !on_bridge && current_ground.wrapping_sub(head_ground) > 3 * GROUND_LEVEL_HEIGHT_LEPTONS {
         return Ok(cells.flags(cells.lookup_world(navigation.x, navigation.y)) & 0x100 != 0);
     }
@@ -640,7 +647,7 @@ pub(crate) fn object_ground_z_leptons(
     }
     terrain
         .and_then(|terrain| terrain.cell(entity.position.rx(), entity.position.ry()))
-        .and_then(|cell| ground_height_leptons(cell.level, cell.slope_type, x, y).ok())
+        .map(|cell| ground_height_leptons_clamped(cell.level, cell.slope_type, x, y))
         .map(|ground| {
             ground.wrapping_add(if entity.on_bridge() {
                 BRIDGE_DECK_HEIGHT_LEPTONS
@@ -727,6 +734,35 @@ pub fn object_get_coords(
         y,
         z: object_world_z_leptons(entity, terrain),
     }
+}
+
+/// The cell an object physically stands in, as the Cell target the Foot
+/// missions anchor their scan on: the raw physical Map565730 Cell receiver,
+/// never Foot's HeadTo. Real map cells retain their canonical coordinates;
+/// the tagged Cell adapter does not yet preserve a retained Dummy pointer
+/// across subsequent stamps.
+///
+/// Without terrain the object's own cell division answers; with it, the
+/// canonical lookup of the object's world XY does. An object's cell is its
+/// ground cell whatever its layer, so an aircraft over the map answers the
+/// cell below it.
+pub(crate) fn physical_cell_target(
+    sim: &Simulation,
+    id: u64,
+) -> Option<crate::sim::combat::TargetKind> {
+    let actor = sim.substrate.entities.get(id)?;
+    let coord = position_world_coord(&actor.position);
+    let cell = sim.resolved_terrain.as_ref().map_or(
+        ((coord.x / 256) as i16, (coord.y / 256) as i16),
+        |terrain| {
+            let query = NativeCellQuery::canonical(terrain);
+            terrain.native_cell_coord(query.lookup_world(coord.x, coord.y))
+        },
+    );
+    Some(crate::sim::combat::TargetKind::Cell(
+        cell.0 as u16,
+        cell.1 as u16,
+    ))
 }
 
 /// Object virtual+A4: Object41BDD0 forwards GetCoords; Building4500A0 adds
@@ -891,7 +927,7 @@ fn ground_at(
     world_xy: [i32; 2],
     terrain: Option<&ResolvedTerrainGrid>,
     path_grid: Option<&PathGrid>,
-) -> Option<Result<i32, String>> {
+) -> Option<i32> {
     if let Some(terrain) = terrain {
         let point = DriveCoord {
             x: world_xy[0],
@@ -906,18 +942,12 @@ fn ground_at(
     let rx = (world_xy[0] / 256) as i16;
     let ry = (world_xy[1] / 256) as i16;
     let cell = path_grid?.cell(rx as u16, ry as u16)?;
-    Some(
-        ground_height_leptons(cell.ground_level, cell.slope_type, world_xy[0], world_xy[1])
-            .map_err(|error| format!("{error:?}")),
-    )
-}
-
-/// The sampled ground, or `None` (keeping the raw Z) for a slope the evaluator
-/// does not model.
-fn supported_ground(ground: Result<i32, String>, world_xy: [i32; 2]) -> Option<i32> {
-    ground
-        .inspect_err(|error| log::warn!("ground pose at {world_xy:?}: {error}; retaining raw Z"))
-        .ok()
+    Some(ground_height_leptons_clamped(
+        cell.ground_level,
+        cell.slope_type,
+        world_xy[0],
+        world_xy[1],
+    ))
 }
 
 /// Sample the live surface at full world XY: the ground plus the deck when
@@ -932,7 +962,7 @@ pub(crate) fn ground_surface_z_at(
     if on_bridge && let Some(deck) = corrected_deck_z_at_xy(world_xy, terrain) {
         return Some(deck);
     }
-    let ground = supported_ground(ground_at(world_xy, terrain, path_grid)?, world_xy)?;
+    let ground = ground_at(world_xy, terrain, path_grid)?;
     Some(z_at_height(ground, 0, on_bridge))
 }
 

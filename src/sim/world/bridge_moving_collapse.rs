@@ -46,10 +46,7 @@ pub(super) fn apply(
             i32::from(level) * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS
         } else {
             let point = DriveCoord { x, y, z: 0 };
-            let Ok(ground) = crate::sim::movement::ground_pose::query_ground_height(&cells, point)
-            else {
-                return; // Unsupported raw slope, not an invented fallback height.
-            };
+            let ground = crate::sim::movement::ground_pose::query_ground_height(&cells, point);
             ground.wrapping_add(crate::util::lepton::BRIDGE_DECK_HEIGHT_LEPTONS)
         };
         (selected, DriveCoord { x, y, z })

@@ -225,7 +225,6 @@ fn ground_height_at_world(world: (i32, i32), cells: &NativeCellQuery<'_>) -> i32
             z: 0,
         },
     )
-    .unwrap_or(0)
 }
 
 /// The track surface is the whole-level high deck. An ordinary deck has the

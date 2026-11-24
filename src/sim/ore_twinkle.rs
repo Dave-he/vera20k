@@ -14,9 +14,7 @@ use crate::sim::anim_class::AnimWorldCoord;
 use crate::sim::components::AnimClassSpawnDescriptor;
 use crate::sim::world::Simulation;
 use crate::util::fixed_math::SimFixed;
-use crate::util::lepton::{
-    GROUND_LEVEL_HEIGHT_LEPTONS, LEPTONS_PER_CELL_I32, ground_height_leptons,
-};
+use crate::util::lepton::{LEPTONS_PER_CELL_I32, ground_height_leptons_clamped};
 
 /// `AnimClass` constructor draw-flags argument of the twinkle spawn:
 /// `FUN_00684C30` calls `AnimClass(OreTwinkle, coord, 0, 1, 0x600, 0, 0)`.
@@ -174,11 +172,9 @@ impl Simulation {
             let world_y = i32::from(ry)
                 .wrapping_mul(LEPTONS_PER_CELL_I32)
                 .wrapping_add(CELL_CENTRE_LEPTONS);
-            // VERA-internal: a slope record outside the 0..20 retail domain has
-            // no safe native evaluation; flat level height stands in
-            // (gamemd equivalent UNCHECKED).
-            let world_z = ground_height_leptons(level, slope_type, world_x, world_y)
-                .unwrap_or_else(|_| i32::from(level).wrapping_mul(GROUND_LEVEL_HEIGHT_LEPTONS));
+            // A slope byte outside the native table reads as flat ground at
+            // the cell's level (`ground_height_leptons_clamped`).
+            let world_z = ground_height_leptons_clamped(level, slope_type, world_x, world_y);
             let mut descriptor = AnimClassSpawnDescriptor::new(
                 type_id,
                 rx,

@@ -425,7 +425,7 @@ impl Simulation {
     /// Foot4D5690(false) at 741689, and Infantry522340 calls it at 52236E,
     /// whatever the locomotor: the body tells a Jumpjet apart itself. A
     /// mapless fixture cannot execute native cell/zone queries. No aircraft
-    /// is represented (the body's Rescue residual).
+    /// is represented (`sim::mission::rescue`'s approach residual).
     pub(crate) fn owns_foot_approach(&self, id: u64, rules: &RuleSet) -> bool {
         let Some(actor) = self.substrate.entities.get(id) else {
             return false;
@@ -697,11 +697,12 @@ impl Simulation {
         // test (4D6764 -> 4D689A). 4D5873 sets the same flag for an
         // aircraft, which native brings here from Foot's Mission_Rescue
         // (AircraftClass vt+0x258 = 4DDF90, Approach at 4DDFEB).
-        // RESIDUAL: VERA's aircraft never run Rescue
-        // (`aircraft::dispatch_mission`) and `owns_foot_approach` refuses
-        // them, so that arm is not ported. Trigger: an aircraft on Rescue; VERA's one
-        // Rescue producer, the base-defense response, queues it only on
-        // infantry and units. Effect: none while no producer exists.
+        // RESIDUAL: an aircraft now runs Rescue (`sim::mission::rescue`),
+        // but `owns_foot_approach` refuses it, so the approach arm native
+        // reaches from Mission_Rescue (0x004DDFEB) is not ported. Trigger:
+        // an aircraft on Rescue with a Target; VERA's one Rescue producer,
+        // the base-defense response, queues it only on infantry and units.
+        // Effect: the aircraft holds its position instead of approaching.
         let flies = actor
             .locomotor
             .as_ref()
@@ -766,8 +767,7 @@ impl Simulation {
                     DriveCoord::from(cell_center(radial.into(), 0))
                 };
                 let cells = NativeCellQuery::canonical(self.resolved_terrain.as_ref().unwrap());
-                point.z = in_range::native_ground_target_z(point.x, point.y, &cells)
-                    .ok_or("Approach candidate surface failed")? as i32;
+                point.z = in_range::native_ground_target_z(point.x, point.y, &cells) as i32;
                 if !self.approach_accepts(
                     id,
                     point,

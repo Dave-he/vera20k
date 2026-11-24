@@ -40,7 +40,7 @@ pub(crate) fn pose(
     let coord = [(x / 256) as i16, (y / 256) as i16];
     let cell = lookup(coord);
     let floor =
-        crate::util::lepton::ground_height_leptons(cell.level as u8, cell.ramp, x, y).ok()?;
+        crate::util::lepton::ground_height_leptons_clamped(cell.level as u8, cell.ramp, x, y);
     let deck = cell.deck_z(floor);
     let deck_lift = deck.wrapping_sub(floor);
     let surface = if context.on_bridge { deck } else { floor };
