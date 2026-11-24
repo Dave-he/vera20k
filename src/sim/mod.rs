@@ -87,6 +87,8 @@ pub(crate) mod locomotor_lift; // the Magnetron's IsLocomotor= lift (ImbueLocomo
 pub mod multiplayer_checksum;
 pub mod native_identity;
 pub(crate) mod object_fall;
+#[cfg(test)] // shared by test groups
+pub(crate) mod perf_probe;
 pub(crate) mod powered_by; // Ares PoweredBy= power sources (PoweredUnitClass 1006A6F0)
 pub(crate) mod powered_unit; // Robot Tanks offline without a PowersUnit= building (Deactivate 0x0070FC90)
 pub(crate) mod radar_jammer; // Ares RadarJamRadius= jammers (JammerClass 10068500)
@@ -239,6 +241,8 @@ pub mod ai_buildable;
 pub(crate) mod ai_team_creation;
 pub(crate) mod ai_unit_choice;
 pub(crate) mod naval_base_placement;
+/// VERA's own computer player: the tactics above the native build queue.
+pub(crate) mod vera_ai;
 pub mod replay;
 #[cfg(all(test, tests_sim_p_s))]
 mod replay_determinism_tests;

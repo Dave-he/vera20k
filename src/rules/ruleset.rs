@@ -827,6 +827,8 @@ pub struct RuleSet {
     /// Empty for every rules set without that section — which is all retail
     /// data — and an empty catalog is what keeps the feature entirely inert.
     personalities: crate::rules::personality::PersonalityCatalog,
+    /// Optional computer-player policy from `[VeraAI]`. Retail rules keep the stock AI.
+    vera_ai: crate::rules::vera_ai::VeraAiPolicy,
     /// `[CommanderFeedback]`: the talking-head layer's own switches, next to
     /// the personalities they govern.
     commander_feedback: crate::rules::personality::CommanderFeedbackRules,
@@ -987,9 +989,15 @@ pub struct RuleSet {
     /// at load from the launch's choice (`util::ra2_launch`). Read through
     /// [`Self::ra2`].
     ra2: bool,
+    /// Whether VeraX plays in this game, decided once from its Rules layers
+    /// by `rules::verax_switch`. Read through [`Self::verax`].
+    verax: bool,
     /// Whether its Rules were read the Ares way (`ares_switch::ares_way`).
     /// Read through [`Self::reads_ares_way`].
     reads_ares_way: bool,
+    /// VERA's own switches, read from the `[VERA]` section of the rules.
+    /// Read through [`Self::vera_features`].
+    vera_features: crate::rules::vera_features::VeraFeatures,
     ares_global_controls: crate::rules::native_processing::AresGlobalControls,
     /// Presentation projection of the retained Ares `[MouseCursors]` list.
     ares_mouse_cursors: crate::rules::ares_mouse_cursor::MouseCursors,
