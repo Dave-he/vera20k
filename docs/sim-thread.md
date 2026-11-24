@@ -384,6 +384,17 @@ worker, so its tick never comes back: the panic hook keeps the message, and
 the main thread panics with it at its next pass, which reports
 `engine-error` to the host. A trap the hook never sees, such as an
 allocation failure, reaches the same place through the worker's script.
+Every way the worker can stop reaches the main thread the same way: a
+worker that cannot fetch its script, cannot start, or cannot import the
+engine reports itself, and the first failure is kept. A tick that was on
+the worker never comes back, so the game ends there and the host gets
+`engine-error`; a worker that stopped with no tick out leaves the game on
+the main thread, lends it nothing more, and the host gets
+`worker-stopped`. The message the player sees says what happened and what
+to do and names no internal detail; the worker's own report stays in the
+log. The worker's script writes the failure into the memory both threads
+share, because a main thread that is spinning for a lent tick cannot run
+the JavaScript that would report it.
 
 Residuals:
 
@@ -395,6 +406,10 @@ Residuals:
   brings that pass at once.
 - A pool worker's panic during an inline tick still leaves the main thread
   spinning in rayon, so the tab freezes instead of reporting it.
+- A worker that is killed without running its script (the browser ends it)
+  writes nothing into the shared memory, so a main thread spinning for that
+  worker's tick keeps spinning. The script's own failure path covers the
+  traps and the panics.
 
 ## Status (render snapshot, phases 2–3)
 
@@ -415,9 +430,15 @@ Not done:
   these changes, run beside it: 9.3–10.6 + 2.7–3.0 ms capture, 6.4–7.4 ms
   copy, 3.4–3.5 ms freeing, 21.8–24.5 ms in all. A record is 1,104 bytes.
   The records are bound by reading 20,000 objects scattered in memory: each
-  touches several cache lines of its `GameEntity`. Left: answer placement,
-  lighting and the status strip only for objects near the screen (radar
-  facts stay for every object).
+  touches several cache lines of its `GameEntity`. The frame answers
+  placement, lighting and the status strip only for the objects the view
+  reaches, and keeps the radar facts for every object: the view is the
+  pass-by window around the camera, published each pass, and the records
+  outside it are passed by like the ones the window admits. A camera that
+  leaves the standing frame's scope drops that frame, and a lent tick, which
+  cannot capture a new one, holds the camera inside the scope it was
+  captured for.
+  Left: measure the capture again on sim-bench's 20,000-unit march.
 - **The simulation thread ticking on its own**, several ticks per hand-off
   (Phase 4's first residual), is the next phase.
 

@@ -118,6 +118,9 @@ pub(crate) struct SimHost {
     /// Whether frames capture VERA's Convenience Help status rows
     /// ([`Self::show_status_rows`]); off, the capture skips them.
     status_rows: bool,
+    /// The camera and the pass-by window around it, published each pass:
+    /// the view the next capture answers for.
+    view: Option<([f32; 2], crate::app::presentation::instances::PassByWindow)>,
     /// Global B04474 and its comparison timer (`FrameChecksumState`):
     /// process state that launch and load retain, written and compared only
     /// inside a multiplayer tick.
@@ -178,20 +181,43 @@ impl SimHost {
     /// changes nothing; there this also starts the simulation worker for the
     /// first scenario that can use it.
     pub(crate) fn pass_may_run(&mut self, wait: bool) -> bool {
+        let ended = self.job_ended();
         #[cfg(all(
             feature = "wasm-threads",
             target_arch = "wasm32",
             target_os = "unknown"
         ))]
+        if ended {
+            self.worker_step();
+        }
+        ended || (wait && !BROWSER_THREADS)
+    }
+
+    /// The browser's simulation worker: start it for the first scenario that
+    /// can use it, and notice when it stopped. A worker that stopped lends
+    /// nothing more, so the game ticks on the main thread.
+    #[cfg(all(
+        feature = "wasm-threads",
+        target_arch = "wasm32",
+        target_os = "unknown"
+    ))]
+    fn worker_step(&mut self) {
+        use crate::web::sim_worker;
+
         if let Some(worker) = &mut self.worker {
-            worker.running |= worker.ready.load(std::sync::atomic::Ordering::Acquire);
-        } else if self.is_installed()
-            && sim_thread_available()
-            && crate::web::sim_worker::available()
-        {
+            if sim_worker::stopped() {
+                // The worker is gone: it lends nothing more, so the game
+                // ticks on the main thread.
+                worker.running = false;
+                if self.is_installed() {
+                    sim_worker::report_worker_failure();
+                }
+            } else {
+                worker.running = worker.ready.load(std::sync::atomic::Ordering::Acquire);
+            }
+        } else if self.is_installed() && sim_thread_available() && sim_worker::available() {
             self.worker = Some(SimWorker::spawn());
         }
-        self.job_ended() || (wait && !BROWSER_THREADS)
     }
 
     /// Have the simulation thread call `wake` whenever a lent job ends.
@@ -214,16 +240,7 @@ impl SimHost {
             return true;
         }
         let worker = self.worker.as_ref().expect("a lent runtime has a worker");
-        self.ended = worker.returned.take();
-        // A worker's panic aborts it, so its tick never comes back.
-        #[cfg(all(
-            feature = "wasm-threads",
-            target_arch = "wasm32",
-            target_os = "unknown"
-        ))]
-        if self.ended.is_none() {
-            crate::web::sim_worker::raise_worker_panic();
-        }
+        self.ended = worker.try_return();
         self.ended.is_some()
     }
 
@@ -399,6 +416,36 @@ impl SimHost {
         }
     }
 
+    /// The camera and the pass-by window around it, for the frame's screen
+    /// answers. A camera that leaves the standing frame's scope drops that
+    /// frame, so the next read captures one for the new view.
+    pub(crate) fn set_view(
+        &mut self,
+        camera: [f32; 2],
+        window: crate::app::presentation::instances::PassByWindow,
+    ) {
+        self.view = Some((camera, window));
+        if !self.lent
+            && self
+                .frame
+                .get()
+                .is_some_and(|frame| !frame.covers_camera(camera))
+        {
+            self.forget_frame();
+        }
+    }
+
+    /// The camera positions the standing frame's scope still covers, while a
+    /// tick is lent: the camera may not leave them, or the picture would
+    /// show objects the frame did not answer for. A home world drops its
+    /// frame instead, so the camera is free there.
+    pub(crate) fn frame_camera_limit(&self) -> Option<([f32; 2], [f32; 2])> {
+        if !self.lent {
+            return None;
+        }
+        self.frame.get().and_then(|frame| frame.camera_range())
+    }
+
     /// What drawing reads of the objects: the frame the lent tick started
     /// from, else the home world's, captured on its first read since the
     /// last write.
@@ -413,6 +460,7 @@ impl SimHost {
                 runtime,
                 &self.sidebar_types,
                 self.status_rows,
+                self.view.map(|(camera, window)| (window, camera)),
             ));
             let mut costs = self.snapshot_costs.get();
             costs.capture += started.elapsed();
@@ -645,6 +693,30 @@ impl SimWorker {
         }
     }
 
+    fn try_return(&self) -> Option<Returned> {
+        // A worker that stopped after returning the tick still delivered it:
+        // its result wins. A tick that never comes back, with a failure
+        // recorded, is a lost world, and the launch ends there.
+        #[cfg(all(
+            feature = "wasm-threads",
+            target_arch = "wasm32",
+            target_os = "unknown"
+        ))]
+        let failure = crate::web::sim_worker::worker_failure();
+        let returned = self.returned.take();
+        #[cfg(all(
+            feature = "wasm-threads",
+            target_arch = "wasm32",
+            target_os = "unknown"
+        ))]
+        if returned.is_none()
+            && let Some(detail) = failure
+        {
+            crate::web::sim_worker::raise_worker_panic(detail);
+        }
+        returned
+    }
+
     /// Wait for the lent runtime to come back.
     fn wait(&self) -> Returned {
         // A wait on another thread traps on the browser's main thread, so
@@ -655,10 +727,9 @@ impl SimWorker {
             target_os = "unknown"
         ))]
         loop {
-            if let Some(returned) = self.returned.take() {
+            if let Some(returned) = self.try_return() {
                 return returned;
             }
-            crate::web::sim_worker::raise_worker_panic();
             std::hint::spin_loop();
         }
         #[cfg(not(all(
