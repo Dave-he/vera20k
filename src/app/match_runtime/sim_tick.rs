@@ -337,7 +337,7 @@ pub(crate) fn drive_local_player_outcome_exit(state: &mut AppState, wall_ms: u64
         super::scenario_exit::scenario_exit_destination(
             state.match_state.session_mode(),
             outcome,
-            state.match_state.map_basic.skip_score.unwrap_or(false),
+            state.match_state.map_basic.skips_score(),
             cooperative,
             title,
             detail,
@@ -1667,6 +1667,15 @@ fn after_simulation_pass(
     scroll_steps: crate::app::input::camera::ScrollSteps,
     replaying: bool,
 ) -> bool {
+    // The frame answers for the view this pass shows: the camera and the
+    // pass-by window around it, published after the scroll, so the next
+    // capture answers for the view the next draw shows.
+    let camera = [
+        state.match_state.input.camera_x,
+        state.match_state.input.camera_y,
+    ];
+    let window = crate::app::presentation::instances::PassByWindow::of(state, None);
+    state.match_state.sim_runtime.set_view(camera, window);
     // MainThrottle55E33B publishes Logic visits per60 wall-clock buckets,
     // including the path where the pacer admitted no simulation frame.
     let wall_ms = state.radar_presentation_ms();
