@@ -5,7 +5,9 @@
 use super::*;
 use crate::app::input::{camera, hotkeys, keyboard};
 use crate::app::match_runtime::sim_host::SimWrite;
-use crate::app::match_runtime::sim_tick::ExactStepReceipt;
+use crate::app::match_runtime::sim_tick::{ExactStepError, ExactStepReceipt};
+use crate::sim::intern::InternedId;
+use crate::sim::world::Simulation;
 use winit::event::{ElementState, MouseButton};
 use winit::keyboard::{Key, KeyCode, KeyLocation, NamedKey};
 
@@ -137,6 +139,11 @@ pub(super) struct OpeningCapture {
     trigger_springs: Vec<Value>,
     /// Poll and House-raise bounds, variable writes and run-time Tags.
     trigger_events: Vec<Value>,
+    /// The trace's terminal outcome frame: a mission whose result was
+    /// admitted inside the traced window admitted it on a frame native does
+    /// not commit. The counters are the last committed ones; `admitting_tick`
+    /// is the frame that admitted the result.
+    outcome_frame: Option<Value>,
 }
 
 impl OpeningCapture {
@@ -168,6 +175,7 @@ impl OpeningCapture {
             push_orders: Vec::new(),
             trigger_springs: Vec::new(),
             trigger_events: Vec::new(),
+            outcome_frame: None,
         }
     }
 
@@ -182,6 +190,16 @@ impl OpeningCapture {
             OpeningTarget::TriggerTrace { .. } => 3600,
             _ => 180,
         })
+    }
+
+    /// A trace whose mission ended is finished: the app leaves the in-game
+    /// route for the victory tail, so the capture must not demand that route
+    /// any more.
+    pub(super) fn mission_ended(&self, state: &AppState) -> bool {
+        if !matches!(self.target, OpeningTarget::TriggerTrace { .. }) {
+            return false;
+        }
+        trace_outcome(state).is_some()
     }
 
     pub(super) fn ready(&self, state: &AppState) -> Result<bool> {
@@ -415,9 +433,57 @@ impl OpeningCapture {
             "campaign opening did not reach {:?} within {limit} production steps",
             self.target
         );
-        let receipt =
-            crate::app::match_runtime::sim_tick::advance_in_game_runtime_exact_step(state)
-                .context("advance exact ordinary campaign production frame")?;
+        let receipt = match crate::app::match_runtime::sim_tick::advance_in_game_runtime_exact_step(
+            state,
+        ) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                // A mission that ends inside the traced window admits its
+                // result on a frame native does not commit: Main_Tick
+                // (0x0055DE4F..0x0055DEC8) skips commit and deferred
+                // destruction while the outcome waits. The trace stops on
+                // that outcome frame instead of failing the step.
+                let stops = state
+                    .match_state
+                    .sim_runtime
+                    .runtime()
+                    .map(|runtime| {
+                        let sim = &runtime.simulation;
+                        trace_stops_on_outcome_frame(
+                            &self.target,
+                            &error,
+                            sim,
+                            local_owner(sim, state),
+                        )
+                    })
+                    .unwrap_or(false);
+                if !stops {
+                    log::error!(
+                        "trigger trace step failed: error={error} outcome={:?} pending_wait={:?}",
+                        trace_outcome(state),
+                        state
+                            .match_state
+                            .sim_runtime
+                            .runtime()
+                            .map(|runtime| runtime.simulation.pending_outcome_wait())
+                    );
+                    return Err(error).context("advance exact ordinary campaign production frame");
+                }
+                let (tick, binary_frame) = installed_frame(state)?;
+                self.collect_trigger_trace(state)?;
+                self.observe(state)?;
+                self.outcome_frame = Some(json!({
+                    "outcome": trace_outcome(state),
+                    "tick": tick,
+                    "binary_frame": binary_frame,
+                    // The frame that admitted the result never commits: the
+                    // session's counters still show the frame before it.
+                    "admitting_tick": tick.saturating_add(1),
+                    "stop": "the mission's result was admitted inside the traced window",
+                }));
+                return Ok(());
+            }
+        };
         // A load installs another frame; the next step starts exactly there.
         let expected = self.loaded_frame.take().or_else(|| {
             self.steps
@@ -431,21 +497,35 @@ impl OpeningCapture {
             );
         }
         self.steps.push(receipt);
-        #[cfg(feature = "dev-overlays")]
-        if let OpeningTarget::TriggerTrace { .. } = self.target {
-            let sim = &mut state
-                .match_state
-                .sim_runtime
-                .write_sim(SimWrite::Debug)
-                .context("trigger trace lost its runtime")?
-                .simulation;
-            let (springs, events) = sim.take_trigger_trace();
-            self.trigger_springs
-                .extend(springs.into_iter().map(|spring| json!(spring)));
-            self.trigger_events
-                .extend(events.into_iter().map(|event| json!(event)));
-        }
+        self.collect_trigger_trace(state)?;
         self.observe(state)?;
+        Ok(())
+    }
+
+    /// Take the trigger trace the runtime recorded since the last collection.
+    #[cfg(feature = "dev-overlays")]
+    fn collect_trigger_trace(&mut self, state: &mut AppState) -> Result<()> {
+        if !matches!(self.target, OpeningTarget::TriggerTrace { .. }) {
+            return Ok(());
+        }
+        let sim = &mut state
+            .match_state
+            .sim_runtime
+            .write_sim(SimWrite::Debug)
+            .context("trigger trace lost its runtime")?
+            .simulation;
+        let (springs, events) = sim.take_trigger_trace();
+        self.trigger_springs
+            .extend(springs.into_iter().map(|spring| json!(spring)));
+        self.trigger_events
+            .extend(events.into_iter().map(|event| json!(event)));
+        Ok(())
+    }
+
+    /// Without the overlay the runtime records no trigger trace at all, and
+    /// the capture has already refused the trigger trace itself.
+    #[cfg(not(feature = "dev-overlays"))]
+    fn collect_trigger_trace(&self, _state: &mut AppState) -> Result<()> {
         Ok(())
     }
 
@@ -915,6 +995,7 @@ impl OpeningCapture {
             "trigger_events": self.trigger_events,
             "push_orders": self.push_orders,
             "outcome": trace_outcome(state),
+            "outcome_frame": self.outcome_frame,
             "houses": if matches!(self.target, OpeningTarget::TriggerTrace { .. }) {
                 Some(trace_houses(state)?)
             } else { None },
@@ -948,7 +1029,7 @@ fn installed_frame(state: &AppState) -> Result<(u64, u32)> {
         .match_state
         .sim_runtime
         .runtime()
-        .context("load left no installed runtime")?
+        .context("no installed runtime")?
         .simulation
         .session();
     Ok((session.tick(), session.binary_frame()))
@@ -1287,11 +1368,75 @@ fn armed_player_units(state: &AppState) -> Result<(u64, String, Vec<u64>)> {
     ))
 }
 
-/// The local House's campaign outcome, once Flag_To_Win or Flag_To_Lose set it.
+/// A trigger trace stops on the frame that admits the mission's result.
+///
+/// Native does not commit that frame: Main_Tick (0x0055DE4F..0x0055DEC8)
+/// skips commit and deferred destruction while the outcome waits, so the
+/// exact-step receipt cannot show the one tick it demands. Every other
+/// capture still fails loudly on that frame, and so does every other
+/// failure of the step.
+fn trace_stops_on_outcome_frame(
+    target: &OpeningTarget,
+    error: &ExactStepError,
+    sim: &Simulation,
+    owner: Option<InternedId>,
+) -> bool {
+    if !matches!(target, OpeningTarget::TriggerTrace { .. }) {
+        return false;
+    }
+    let Some(owner) = owner else {
+        return false;
+    };
+    match error {
+        // The frame that admits the result advances no tick. The House holds
+        // the request it admitted, and the session routes the result once
+        // the wait ends; either one says the mission's result is in.
+        ExactStepError::TickDelta { actual: 0 } => {
+            trace_outcome_for(sim, owner).is_some() || sim.pending_outcome_wait().is_some()
+        }
+        // The app left the in-game route, which it does once it routed the
+        // result.
+        ExactStepError::ScreenNotInGame => routed_outcome_for(sim, owner).is_some(),
+        _ => false,
+    }
+}
+
+/// The local House's owner id in the installed simulation.
+fn local_owner(sim: &Simulation, state: &AppState) -> Option<InternedId> {
+    crate::app::input::commands::preferred_local_owner_name(state)
+        .and_then(|name| sim.interner().get(&name))
+}
+
+/// The local House's campaign outcome, in whichever phase it is.
+///
+/// The session routes the result and keeps it; the House's own flag
+/// describes the request it still holds. House4F8657 clears `Won` after the
+/// Vox wait, so a House flag alone never shows a routed result.
 fn trace_outcome(state: &AppState) -> Option<&'static str> {
     let sim = &state.match_state.sim_runtime.runtime()?.simulation;
-    let owner = crate::app::input::commands::preferred_local_owner_name(state)
-        .and_then(|name| sim.interner().get(&name))?;
+    let owner = local_owner(sim, state)?;
+    trace_outcome_for(sim, owner)
+}
+
+/// The result the session routed for one owner.
+///
+/// This is the query the app routes the result with
+/// (Main_Game 0x0048CE8A..0x0048CEA1): the session owns the request after
+/// the House's Vox wait.
+fn routed_outcome_for(sim: &Simulation, owner: InternedId) -> Option<&'static str> {
+    use crate::sim::house_state::HouseOutcomeKind;
+    match sim
+        .ready_outcome_for_owner(owner)
+        .map(|outcome| outcome.kind)
+    {
+        Some(HouseOutcomeKind::Victory) => Some("won"),
+        Some(HouseOutcomeKind::Defeat) => Some("lost"),
+        None => None,
+    }
+}
+
+/// The result the local House still holds, before the session routes it.
+fn pending_outcome_for(sim: &Simulation, owner: InternedId) -> Option<&'static str> {
     let house = sim.houses().get(&owner)?;
     if house.has_won() {
         Some("won")
@@ -1300,6 +1445,12 @@ fn trace_outcome(state: &AppState) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// The mission's outcome: the routed result, or the request the House holds
+/// while the outcome waits.
+fn trace_outcome_for(sim: &Simulation, owner: InternedId) -> Option<&'static str> {
+    routed_outcome_for(sim, owner).or_else(|| pending_outcome_for(sim, owner))
 }
 
 /// End-of-trace House summary: live, non-limbo objects per category.
@@ -1335,4 +1486,121 @@ fn trace_houses(state: &AppState) -> Result<Value> {
             }))
             .collect::<Vec<_>>()
     ))
+}
+
+#[cfg(all(test, tests_app))]
+mod tests {
+    use super::*;
+    use crate::sim::house_state::{HouseOutcomeKind, HouseState};
+    use crate::sim::runtime::SimRuntime;
+    use crate::sim::scenario_session::ScenarioGameMode;
+    use crate::sim::world::{FrameEffects, OutcomeWaitBoundary, TickLane};
+    use std::cell::Cell;
+
+    /// The Vox cue the outcome waits for before the House releases it.
+    struct Vox(Cell<bool>);
+
+    impl OutcomeWaitBoundary for Vox {
+        fn wait_complete(&mut self, _owner: InternedId, _kind: HouseOutcomeKind) -> bool {
+            self.0.get()
+        }
+    }
+
+    fn trace() -> OpeningTarget {
+        OpeningTarget::TriggerTrace {
+            scenario: "ALL01UMD",
+            tick: 900,
+            push: None,
+        }
+    }
+
+    /// A mission whose result waits for its Vox cue.
+    fn waiting_mission() -> (SimRuntime, InternedId, Vox) {
+        let mut sim = Simulation::with_seed(0x004F_860B);
+        let owner = sim.intern("Human");
+        let mut house = HouseState::new(owner, 0, None, true, 0, 10);
+        assert!(house.accept_win_result(0, 0, false));
+        sim.houses_mut_for_test().register(house);
+        sim.session_mut_for_test()
+            .set_game_mode(ScenarioGameMode::Skirmish);
+        sim.session_mut_for_test()
+            .set_current_house_for_test(Some(owner));
+        let runtime = SimRuntime::from_simulation(sim);
+        (runtime, owner, Vox(Cell::new(false)))
+    }
+
+    #[test]
+    fn a_trigger_trace_stops_on_the_outcome_frame_and_other_captures_do_not() {
+        let (mut runtime, owner, mut vox) = waiting_mission();
+        let first = runtime
+            .advance_frame(
+                &[],
+                67,
+                TickLane::Ordinary,
+                &mut FrameEffects::empty().with_outcome_wait(&mut vox),
+            )
+            .unwrap();
+        assert!(first.outcome_waiting);
+        let sim = &runtime.simulation;
+
+        // The frame that admits the result advances no tick: the trace stops
+        // there instead of failing the step.
+        assert!(trace_stops_on_outcome_frame(
+            &trace(),
+            &ExactStepError::TickDelta { actual: 0 },
+            sim,
+            Some(owner),
+        ));
+        // A step that failed for another reason is still an error.
+        assert!(!trace_stops_on_outcome_frame(
+            &trace(),
+            &ExactStepError::TickDelta { actual: 2 },
+            sim,
+            Some(owner),
+        ));
+        assert!(!trace_stops_on_outcome_frame(
+            &trace(),
+            &ExactStepError::FrameDelta { actual: 0 },
+            sim,
+            Some(owner),
+        ));
+        // Every other capture still fails on the frame native does not commit.
+        assert!(!trace_stops_on_outcome_frame(
+            &OpeningTarget::AlliedTick(900),
+            &ExactStepError::TickDelta { actual: 0 },
+            sim,
+            Some(owner),
+        ));
+    }
+
+    #[test]
+    fn a_routed_result_outranks_the_cleared_house_flag() {
+        let (mut runtime, owner, mut vox) = waiting_mission();
+
+        // A mission result ends the mission: the session routes it, the
+        // House's own flag is cleared once the Vox wait ends (House4F8657),
+        // and the frame that admits it never commits (Main_Tick
+        // 0x0055DE4F..0x0055DEC8). A capture that watches the House flag
+        // alone sees no victory at all.
+        let first = runtime
+            .advance_frame(
+                &[],
+                67,
+                TickLane::Ordinary,
+                &mut FrameEffects::empty().with_outcome_wait(&mut vox),
+            )
+            .unwrap();
+        assert!(first.outcome_waiting);
+
+        vox.0.set(true);
+        let completed = runtime
+            .resume_outcome_wait(&mut FrameEffects::empty().with_outcome_wait(&mut vox))
+            .unwrap();
+        assert!(!completed.outcome_waiting);
+        assert!(!runtime.simulation.houses()[&owner].has_won());
+        assert!(!runtime.simulation.houses()[&owner].has_lost());
+
+        // The capture routes the result the session admitted.
+        assert_eq!(trace_outcome_for(&runtime.simulation, owner), Some("won"));
+    }
 }
