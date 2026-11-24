@@ -58,6 +58,9 @@ for checkpoint in EXPLICIT_CAMPAIGN_MAPS:
     CAMPAIGN_CHECKPOINTS[checkpoint] = ("all1", "explicit-first-live-frame")
 CAMPAIGN_CHECKPOINTS["campaign-all1-initial-save"] = ("all1", "initial-save")
 CAMPAIGN_CHECKPOINTS["campaign-sov1-initial-save"] = ("sov1", "initial-save")
+# The campaign trigger trace names its own mission, so its receipt carries no
+# campaign table entry: the mission and the campaign come from the capture.
+TRIGGER_TRACE_CHECKPOINT = "campaign-trigger-trace"
 for phase in ("opening-locked", "opening-pan", "opening-flash", "opening-arrows",
               "opening-unlocked", "opening-restore-unlocked",
               "opening-timer-running", "opening-timer-expired"):
@@ -91,11 +94,17 @@ def validate_campaign_capture(manifest):
     """Check route/owner receipt consistency; this does not assert native parity."""
     checkpoint = manifest.get("checkpoint")
     schema = manifest.get("schema_version")
-    if checkpoint not in CAMPAIGN_CHECKPOINTS and schema != CAMPAIGN_SCHEMA:
+    trigger_trace = checkpoint == TRIGGER_TRACE_CHECKPOINT
+    if not trigger_trace and checkpoint not in CAMPAIGN_CHECKPOINTS and schema != CAMPAIGN_SCHEMA:
         return None
     _require(schema == CAMPAIGN_SCHEMA, "campaign checkpoint has no campaign receipt schema")
-    _require(checkpoint in CAMPAIGN_CHECKPOINTS, "unknown campaign receipt checkpoint")
-    campaign_id, phase = CAMPAIGN_CHECKPOINTS[checkpoint]
+    if trigger_trace:
+        # The trigger trace names its own mission, so the campaign table has
+        # no entry for it: the campaign comes from the admitted startup.
+        campaign_id, phase = "", "trigger-trace"
+    else:
+        _require(checkpoint in CAMPAIGN_CHECKPOINTS, "unknown campaign receipt checkpoint")
+        campaign_id, phase = CAMPAIGN_CHECKPOINTS[checkpoint]
     _require(manifest.get("checkpoint_phase") == phase, "campaign checkpoint phase mismatch")
     _require(manifest.get("parity_certification") == "NONE", "capture is not a parity certificate")
     _require(_hex_hash(manifest["frame"].get("sha256"), 64)
@@ -132,10 +141,13 @@ def validate_campaign_capture(manifest):
         return {"phase": phase, "parity_certification": "NONE"}
 
     explicit_map = EXPLICIT_CAMPAIGN_MAPS.get(checkpoint)
-    if explicit_map:
+    if explicit_map or trigger_trace:
         release_index, press = route_action("explicit campaign spawn", after=new_index)
         release = press
-        _require(press.get("scenario") == explicit_map and press.get("seed") == 1,
+        # A trigger trace names its own mission: the capture admits it
+        # explicitly, without an emblem press.
+        expected_spawn = explicit_map if explicit_map else press.get("scenario")
+        _require(press.get("scenario") == expected_spawn and press.get("seed") == 1,
                  "explicit campaign admission changed")
     else:
         press_index, press = route_action("emblem press", 0x94, new_index)
@@ -148,6 +160,13 @@ def validate_campaign_capture(manifest):
     admitted_index, _ = route_action("campaign loading admitted", after=release_index)
     startup = manifest["startup"]
     campaign = startup["campaign"]
+    if trigger_trace:
+        # The trigger trace names its own mission: the campaign comes from
+        # the admitted startup instead of an emblem press.
+        campaign_id = str(campaign["id"]).lower()
+        _require(campaign_id in ("all1", "sov1"), "trigger trace admitted an unknown campaign")
+        _require(press.get("scenario") == startup.get("scenario", campaign["scenario"]),
+                 "trigger trace spawned another mission than it admitted")
     _require(str(campaign["id"]).lower() == campaign_id, "admitted campaign differs from emblem")
     _require(_integer(campaign["index"]) and campaign["index"] >= 0 and _integer(campaign["cd"]),
              "campaign registry admission is missing index/CD")
@@ -199,7 +218,7 @@ def validate_campaign_capture(manifest):
     if phase == "loading-first-frame":
         _require(runtime is None, "first loading capture claims an installed runtime")
     else:
-        opening_phase = phase.startswith("opening-")
+        opening_phase = phase.startswith("opening-") or phase == "trigger-trace"
         _require(isinstance(runtime, dict) and _integer(runtime.get("tick"))
                  and (runtime["tick"] > 0 if opening_phase else
                       runtime["tick"] == (1 if phase == "initial-save" else 0))
@@ -236,7 +255,9 @@ def validate_campaign_capture(manifest):
                  and len(camera["view_bookmarks"]) == 4
                  and all(isinstance(cell, list) and len(cell) == 2 for cell in camera["view_bookmarks"]),
                  "campaign camera/bookmark receipt missing")
-        if opening_phase:
+        if phase == "trigger-trace":
+            trigger_trace = _validate_trigger_trace(manifest, runtime)
+        elif opening_phase:
             _validate_campaign_opening(manifest, phase, runtime)
         if phase == "initial-save":
             saved = manifest.get("initial_save", {})
@@ -314,9 +335,12 @@ def validate_campaign_capture(manifest):
                  and returned["campaign_mission_counter"] == cleanup["campaign_mission_counter"],
                  "campaign abort omitted EXIT consumption/lease return/retained Session counter reset")
     _require("mission_opening_1308" in manifest["coverage"], "capture omits its mission-opening limit")
-    return {"campaign": campaign_id, "phase": phase, "scenario": selected_scenario,
-            "selected_map_sha256": source["source_sha256"],
-            "map_admission": manifest["map_admission"], "parity_certification": "NONE"}
+    report = {"campaign": campaign_id, "phase": phase, "scenario": selected_scenario,
+              "selected_map_sha256": source["source_sha256"],
+              "map_admission": manifest["map_admission"], "parity_certification": "NONE"}
+    if phase == "trigger-trace":
+        report["trigger_trace"] = trigger_trace
+    return report
 
 
 CAMPAIGN_INSTALLED = {
@@ -509,6 +533,52 @@ def _validate_campaign_opening(manifest, phase, runtime):
                  "ordinary load did not replace the campaign installation with its saved world")
     else:
         _require(restored is None, "non-restore opening capture changed the saved-game timeline")
+
+
+def _validate_trigger_trace(manifest, runtime):
+    """The trigger trace's production steps and its terminal outcome frame.
+
+    A mission's result is admitted on a frame native does not commit: the
+    trace stops there, so the last committed frame is the one before the
+    admitting frame, and the trace holds no step past it.
+    """
+    opening = manifest["opening"]
+    _require(opening["target"] == "trigger-trace", "trigger trace has a different opening target")
+    initial = opening["initial_runtime"]
+    _require(initial["tick"] == 0 and initial["game_mode_nonzero"] is False,
+             "trigger trace skipped the ordinary tick-zero installation")
+    steps = opening["exact_steps"]
+    _require(isinstance(steps, list) and steps, "trigger trace has no production steps")
+    tick, frame = initial["tick"], initial["binary_frame"]
+    for step in steps:
+        _require(step["tick_before"] == tick and step["tick_after"] == tick + 1
+                 and step["binary_frame_before"] == frame
+                 and step["binary_frame_after"] == (frame + 1) & 0xFFFFFFFF,
+                 "trigger trace production steps contain a gap or a repeated frame")
+        tick, frame = step["tick_after"], step["binary_frame_after"]
+    current = opening["current"]
+    _require(tick == runtime["tick"] == current["tick"]
+             and frame == runtime["binary_frame"] == current["binary_frame"],
+             "trigger trace readback differs from its last production step")
+    requested = opening.get("requested_tick")
+    _require(_integer(requested) and requested > 0, "trigger trace has no requested tick")
+    outcome = opening.get("outcome")
+    outcome_frame = opening.get("outcome_frame")
+    if outcome is None:
+        _require(outcome_frame is None, "trigger trace has an outcome frame without an outcome")
+        _require(tick == requested, "trigger trace stopped before its requested tick")
+        return {"outcome": None}
+    _require(outcome in ("won", "lost"), "trigger trace outcome is not a mission result")
+    _require(isinstance(outcome_frame, dict), "trigger trace outcome has no outcome frame")
+    _require(outcome_frame.get("outcome") == outcome,
+             "trigger trace outcome frame names another result")
+    _require(outcome_frame.get("tick") == tick and outcome_frame.get("binary_frame") == frame,
+             "trigger trace outcome frame is not the last committed frame")
+    _require(outcome_frame.get("admitting_tick") == tick + 1,
+             "trigger trace outcome frame is not the frame that admitted the result")
+    _require(isinstance(outcome_frame.get("stop"), str) and outcome_frame["stop"],
+             "trigger trace outcome frame has no stop reason")
+    return {"outcome": outcome, "admitting_tick": outcome_frame["admitting_tick"]}
 
 
 def _paeth(a, b, c):
