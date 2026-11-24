@@ -860,12 +860,34 @@ impl RuleSet {
         self.ra2
     }
 
+    /// Whether VeraX plays in this game: its Rules layers or map hold a VeraX
+    /// key (`rules::verax_switch`). Every build reads this one answer, so a
+    /// game that ships the key plays the same everywhere.
+    #[inline]
+    pub fn verax(&self) -> bool {
+        self.verax
+    }
+
     /// Whether this game's Rules were read the Ares way
     /// (`ares_switch::ares_way`). The game's readers after the projection (its
     /// fixed ART, the asset closures) open the same mode with
     /// `ares_switch::read_ares_way`.
     pub fn reads_ares_way(&self) -> bool {
         self.reads_ares_way
+    }
+
+    /// VERA's own switches, read from the `[VERA]` section of the rules
+    /// (`rules::vera_features`). The simulation reads the one it needs.
+    #[inline]
+    pub fn vera_features(&self) -> &crate::rules::vera_features::VeraFeatures {
+        &self.vera_features
+    }
+
+    /// Whether the path batch's shared goal field plays in this game: the
+    /// rules' `[VERA] SharedGoalField=` key, off with retail data.
+    #[inline]
+    pub fn shared_goal_field(&self) -> bool {
+        self.vera_features.shared_goal_field
     }
 
     /// Whether the code that needs Ares' own Rules takes its Ares form in this

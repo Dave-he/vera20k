@@ -82,6 +82,11 @@ cp config.toml.example config.toml
 cargo run --release --bin vera20k
 ```
 
+The game reads the original Yuri's Revenge archives from a copy you own. The
+[local game-files guide](tools/game_files.md) finds that copy, checks it with
+the engine's own installer check, keeps only the files the engine reads and
+points `config.toml` at it.
+
 ## How we work
 
 Most of the code is written by AI coding agents. They use Ghidra to study the original
@@ -95,8 +100,9 @@ sound, graphics and controls or turn on VERA features. The game saves your prefe
 `VERA.INI`, with VERA-specific options under `[VERA]`.
 
 Lobby settings, mods and maps can change the rules for a match. Mods and maps can enable supported
-[Ares](docs/ares.md) and [Phobos](docs/phobos.md) features through their INI files. A mod can also
-enable Ares by including `ares.mix`. Some Phobos features still require a build with `--features phobos`.
+[Ares](docs/ares.md), [Phobos](docs/phobos.md) and [VeraX](docs/verax.md) features through their INI
+files. A mod can also enable Ares by including `ares.mix`. Some Phobos features still require a
+build with `--features phobos`.
 
 To create a mod, start with the [modding guide](docs/modding.md).
 
