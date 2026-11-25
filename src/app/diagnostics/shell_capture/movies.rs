@@ -17,7 +17,11 @@ pub(crate) use lan::{LAN_CHECKPOINTS, LanTarget};
 mod wol;
 pub(crate) use wol::{WOL_CHECKPOINTS, WolTarget};
 mod opening;
-pub(super) use opening::OpeningTarget;
+pub(super) use opening::MAX_TRACE_CAPTURE_CELLS;
+pub(super) use opening::MAX_TRACE_LEGS;
+pub(crate) use opening::OpeningTarget;
+pub(super) use opening::TraceCaptureCells;
+pub(super) use opening::TraceLegs;
 
 /// Native control corpus read from this checkout's `tools/` at capture time.
 /// Diagnostics run from a development checkout, so the release binary does
