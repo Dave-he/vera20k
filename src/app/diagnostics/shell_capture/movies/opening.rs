@@ -5,11 +5,149 @@
 use super::*;
 use crate::app::input::{camera, hotkeys, keyboard};
 use crate::app::match_runtime::sim_host::SimWrite;
-use crate::app::match_runtime::sim_tick::ExactStepReceipt;
+use crate::app::match_runtime::sim_tick::{ExactStepError, ExactStepReceipt};
+use crate::sim::intern::InternedId;
+use crate::sim::mission::{MissionId, MissionType};
+use crate::sim::world::Simulation;
 use winit::event::{ElementState, MouseButton};
 use winit::keyboard::{Key, KeyCode, KeyLocation, NamedKey};
 
 mod aircraft;
+
+/// The cells a trigger trace may name, in capture order.
+pub type TraceCaptureCells = [(u16, u16); MAX_TRACE_CAPTURE_CELLS];
+
+/// How many capture cells a trigger trace may name.
+pub const MAX_TRACE_CAPTURE_CELLS: usize = 8;
+
+/// The legs a trigger trace may name: the tick each starts on and its cell.
+pub type TraceLegs = [(u64, (u16, u16)); MAX_TRACE_LEGS];
+
+/// How many legs a trigger trace may name.
+pub const MAX_TRACE_LEGS: usize = 8;
+
+/// How long a capture order may stay without reaching its engineer before
+/// the probe treats it as dropped and frees the cell for the next building.
+const CAPTURE_ORDER_GRACE_TICKS: u64 = 120;
+
+/// One accepted capture order and how it ended.
+struct CaptureOrder {
+    /// The tick the order was issued on.
+    tick: u64,
+    /// The engineer that carries the order.
+    engineer: u64,
+    /// The building the engineer was sent to capture.
+    target: u64,
+    /// The cell the building stands on.
+    cell: (u16, u16),
+    /// The tick the building changed hands.
+    completed: Option<u64>,
+    /// Where the engineer stood when the order was issued.
+    start_cell: (u16, u16),
+    /// Where the engineer stood the last time it was seen.
+    last_cell: (u16, u16),
+    /// Why the order ended without the building changing hands.
+    dropped: Option<&'static str>,
+    /// The engineer's health each time it changed, with the tick it changed.
+    health: Vec<(u64, i32)>,
+    /// The hostile units next to the engineer when its health last changed.
+    threats: Vec<String>,
+}
+
+/// The probe sends one capture at a time. Keep progress attached to the
+/// individual attempt even if another order uses the same engineer or cell.
+#[derive(Clone, Copy)]
+struct CaptureInFlight {
+    order: usize,
+    carrying: bool,
+}
+
+/// An engineer the map is not using: it carries no order of its own. A
+/// guarding engineer waits for orders; a scripted one does not.
+fn engineer_is_free(current: MissionId, queued: MissionId, suspended: MissionId) -> bool {
+    (current == MissionId::NONE || current.known() == Some(MissionType::Guard))
+        && queued == MissionId::NONE
+        && suspended == MissionId::NONE
+}
+
+/// The next building the probe captures: the first named cell that holds a
+/// building the player does not own yet. The capture list is worked in the
+/// order it was named, so a building whose capture is still running keeps
+/// its place and the probe waits for it.
+fn next_capture_cell(
+    cells: &[(u16, u16)],
+    mut building_at: impl FnMut((u16, u16)) -> Option<(u64, bool)>,
+) -> Option<(u64, (u16, u16))> {
+    for cell in cells {
+        if let Some((id, owned)) = building_at(*cell)
+            && !owned
+        {
+            return Some((id, *cell));
+        }
+    }
+    None
+}
+
+/// The hostile units next to the watched engineer.
+///
+/// A hostile unit more than three cells away cannot have reached the
+/// engineer in one step, so the list keeps what a bullet or a turret could
+/// have hit. The engineer itself never appears in it.
+fn select_threats(
+    engineer: u64,
+    engineer_cell: (u16, u16),
+    candidates: &[(u64, String, (u16, u16), bool)],
+) -> Vec<String> {
+    let mut threats = Vec::new();
+    for (id, type_name, cell, targeting) in candidates {
+        if *id == engineer {
+            continue;
+        }
+        let distance = cell
+            .0
+            .abs_diff(engineer_cell.0)
+            .max(cell.1.abs_diff(engineer_cell.1));
+        if distance > 3 {
+            continue;
+        }
+        let mut line = format!("{type_name}#{id} at ({},{})", cell.0, cell.1);
+        if *targeting {
+            line.push_str(" targets the engineer");
+        }
+        threats.push(line);
+        if threats.len() == 8 {
+            break;
+        }
+    }
+    threats
+}
+
+/// The hostile units next to the watched engineer, read from the world.
+fn threats_near(
+    sim: &Simulation,
+    player: InternedId,
+    engineer: u64,
+    cell: (u16, u16),
+) -> Vec<String> {
+    let candidates = sim
+        .entities()
+        .iter_sorted()
+        .filter(|(_, entity)| entity.owner() != player && entity.is_ai_alive())
+        .map(|(id, entity)| {
+            let targeting = matches!(
+                entity.attack_target.target(),
+                Some(crate::sim::combat::TargetKind::Entity(target)) if target == engineer
+            );
+            (
+                id,
+                sim.interner().resolve(entity.type_ref()).to_owned(),
+                (entity.position.rx(), entity.position.ry()),
+                targeting,
+            )
+        })
+        .collect::<Vec<_>>();
+    select_threats(engineer, cell, &candidates)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpeningTarget {
@@ -44,11 +182,15 @@ pub enum OpeningTarget {
     /// classes needs: the starting Tags, the poll and House-raise bounds,
     /// world raises, world-reading event results, attachment counts,
     /// variable writes and run-time Tags. Without `push` there is no player
-    /// input; with it the player's armed units attack-move toward that Cell.
+    /// input unless a probe is requested. `push` sends the player's armed
+    /// units toward a cell. `capture` names the buildings the probe captures,
+    /// in order, as engineers become available.
     TriggerTrace {
         scenario: &'static str,
         tick: u64,
         push: Option<(u16, u16)>,
+        capture: Option<(TraceCaptureCells, u8)>,
+        legs: Option<(TraceLegs, u8)>,
     },
     /// Save/load that naturally created alert, then present the restored radar.
     RadarRestored,
@@ -134,9 +276,26 @@ pub(super) struct OpeningCapture {
     group_orders: Option<Value>,
     /// Trigger-trace push orders issued: tick and unit count of each.
     push_orders: Vec<(u64, usize)>,
+    /// The cell the last push order named, so a new leg is sent at once.
+    push_destination: Option<(u16, u16)>,
+    /// Accepted captures and their observed results, in issue order.
+    capture_orders: Vec<CaptureOrder>,
+    capture_in_flight: Option<CaptureInFlight>,
+    /// What the capture probe last saw: the named cells, their buildings,
+    /// the engineer it picked and whether the order was accepted.
+    capture_probe: Option<Value>,
+    /// What the probe saw each time the capture state changed: the engineer
+    /// it uses, where it stands, what it is doing and who owns the
+    /// building. The list is the probe's record of the capture's progress.
+    capture_log: Vec<Value>,
     trigger_springs: Vec<Value>,
     /// Poll and House-raise bounds, variable writes and run-time Tags.
     trigger_events: Vec<Value>,
+    /// The trace's terminal outcome frame: a mission whose result was
+    /// admitted inside the traced window admitted it on a frame native does
+    /// not commit. The counters are the last committed ones; `admitting_tick`
+    /// is the frame that admitted the result.
+    outcome_frame: Option<Value>,
 }
 
 impl OpeningCapture {
@@ -166,8 +325,14 @@ impl OpeningCapture {
             saved_radar: None,
             group_orders: None,
             push_orders: Vec::new(),
+            push_destination: None,
+            capture_orders: Vec::new(),
+            capture_in_flight: None,
+            capture_probe: None,
+            capture_log: Vec::new(),
             trigger_springs: Vec::new(),
             trigger_events: Vec::new(),
+            outcome_frame: None,
         }
     }
 
@@ -182,6 +347,16 @@ impl OpeningCapture {
             OpeningTarget::TriggerTrace { .. } => 3600,
             _ => 180,
         })
+    }
+
+    /// A trace whose mission ended is finished: the app leaves the in-game
+    /// route for the victory tail, so the capture must not demand that route
+    /// any more.
+    pub(super) fn mission_ended(&self, state: &AppState) -> bool {
+        if !matches!(self.target, OpeningTarget::TriggerTrace { .. }) {
+            return false;
+        }
+        trace_outcome(state).is_some()
     }
 
     pub(super) fn ready(&self, state: &AppState) -> Result<bool> {
@@ -304,6 +479,16 @@ impl OpeningCapture {
             }
         }
         self.observe(state)?;
+        if let OpeningTarget::TriggerTrace {
+            capture: Some(_), ..
+        } = self.target
+        {
+            // The capture orders are followed on every frame, the last one
+            // included: the readback below returns before the capture block
+            // runs, and a capture that landed on the final frame still has
+            // to be in the receipt.
+            self.note_capture_progress(state);
+        }
         if matches!(
             self.target,
             OpeningTarget::RadarAlert | OpeningTarget::RadarRestored
@@ -345,12 +530,20 @@ impl OpeningCapture {
         {
             self.issue_campaign_encounter_orders(state)?;
         }
-        if let OpeningTarget::TriggerTrace {
-            push: Some(cell), ..
-        } = self.target
+        // The first simulation tick can publish the briefing's input lock.
+        // Let it commit before the trace sends any player orders.
+        if let OpeningTarget::TriggerTrace { capture, .. } = self.target
             && !locked
+            && state
+                .match_state
+                .sim_runtime
+                .runtime()
+                .is_some_and(|runtime| runtime.simulation.session().tick() > 0)
         {
-            self.issue_trace_push_orders(state, cell)?;
+            self.issue_trace_push_orders(state)?;
+            if let Some((cells, len)) = capture {
+                self.issue_trace_capture(state, &cells[..len as usize])?;
+            }
         }
         if matches!(
             self.target,
@@ -415,9 +608,57 @@ impl OpeningCapture {
             "campaign opening did not reach {:?} within {limit} production steps",
             self.target
         );
-        let receipt =
-            crate::app::match_runtime::sim_tick::advance_in_game_runtime_exact_step(state)
-                .context("advance exact ordinary campaign production frame")?;
+        let receipt = match crate::app::match_runtime::sim_tick::advance_in_game_runtime_exact_step(
+            state,
+        ) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                // A mission that ends inside the traced window admits its
+                // result on a frame native does not commit: Main_Tick
+                // (0x0055DE4F..0x0055DEC8) skips commit and deferred
+                // destruction while the outcome waits. The trace stops on
+                // that outcome frame instead of failing the step.
+                let stops = state
+                    .match_state
+                    .sim_runtime
+                    .runtime()
+                    .map(|runtime| {
+                        let sim = &runtime.simulation;
+                        trace_stops_on_outcome_frame(
+                            &self.target,
+                            &error,
+                            sim,
+                            sim.session().current_house(),
+                        )
+                    })
+                    .unwrap_or(false);
+                if !stops {
+                    log::error!(
+                        "trigger trace step failed: error={error} outcome={:?} pending_wait={:?}",
+                        trace_outcome(state),
+                        state
+                            .match_state
+                            .sim_runtime
+                            .runtime()
+                            .map(|runtime| runtime.simulation.pending_outcome_wait())
+                    );
+                    return Err(error).context("advance exact ordinary campaign production frame");
+                }
+                let (tick, binary_frame) = installed_frame(state)?;
+                self.collect_trigger_trace(state)?;
+                self.observe(state)?;
+                self.outcome_frame = Some(json!({
+                    "outcome": trace_outcome(state),
+                    "tick": tick,
+                    "binary_frame": binary_frame,
+                    // The frame that admitted the result never commits: the
+                    // session's counters still show the frame before it.
+                    "admitting_tick": tick.saturating_add(1),
+                    "stop": "the mission's result was admitted inside the traced window",
+                }));
+                return Ok(());
+            }
+        };
         // A load installs another frame; the next step starts exactly there.
         let expected = self.loaded_frame.take().or_else(|| {
             self.steps
@@ -431,21 +672,35 @@ impl OpeningCapture {
             );
         }
         self.steps.push(receipt);
-        #[cfg(feature = "dev-overlays")]
-        if let OpeningTarget::TriggerTrace { .. } = self.target {
-            let sim = &mut state
-                .match_state
-                .sim_runtime
-                .write_sim(SimWrite::Debug)
-                .context("trigger trace lost its runtime")?
-                .simulation;
-            let (springs, events) = sim.take_trigger_trace();
-            self.trigger_springs
-                .extend(springs.into_iter().map(|spring| json!(spring)));
-            self.trigger_events
-                .extend(events.into_iter().map(|event| json!(event)));
-        }
+        self.collect_trigger_trace(state)?;
         self.observe(state)?;
+        Ok(())
+    }
+
+    /// Take the trigger trace the runtime recorded since the last collection.
+    #[cfg(feature = "dev-overlays")]
+    fn collect_trigger_trace(&mut self, state: &mut AppState) -> Result<()> {
+        if !matches!(self.target, OpeningTarget::TriggerTrace { .. }) {
+            return Ok(());
+        }
+        let sim = &mut state
+            .match_state
+            .sim_runtime
+            .write_sim(SimWrite::Debug)
+            .context("trigger trace lost its runtime")?
+            .simulation;
+        let (springs, events) = sim.take_trigger_trace();
+        self.trigger_springs
+            .extend(springs.into_iter().map(|spring| json!(spring)));
+        self.trigger_events
+            .extend(events.into_iter().map(|event| json!(event)));
+        Ok(())
+    }
+
+    /// Without the overlay the runtime records no trigger trace at all, and
+    /// the capture has already refused the trigger trace itself.
+    #[cfg(not(feature = "dev-overlays"))]
+    fn collect_trigger_trace(&self, _state: &mut AppState) -> Result<()> {
         Ok(())
     }
 
@@ -855,16 +1110,21 @@ impl OpeningCapture {
     /// Trigger trace `-push-<X>-<Y>`: like a player sending the whole armed
     /// force, every armed unit attack-moves toward one Cell, again each game
     /// minute so new and idle units follow. Player input only.
-    fn issue_trace_push_orders(&mut self, state: &mut AppState, cell: (u16, u16)) -> Result<()> {
+    fn issue_trace_push_orders(&mut self, state: &mut AppState) -> Result<()> {
         use crate::sim::combat::TargetKind;
         use crate::sim::command::Command;
         const PERIOD_TICKS: u64 = 900;
         let (tick, owner, ids) = armed_player_units(state)?;
+        let Some(cell) = self.trace_destination(tick) else {
+            return Ok(());
+        };
+        let changed = self.push_destination != Some(cell);
         if ids.is_empty()
-            || self
-                .push_orders
-                .last()
-                .is_some_and(|&(last, _)| tick < last + PERIOD_TICKS)
+            || (!changed
+                && self
+                    .push_orders
+                    .last()
+                    .is_some_and(|&(last, _)| tick < last + PERIOD_TICKS))
         {
             return Ok(());
         }
@@ -883,8 +1143,312 @@ impl OpeningCapture {
                 "push attack-move input rejected"
             );
         }
+        self.push_destination = Some(cell);
         self.push_orders.push((tick, ids.len()));
         Ok(())
+    }
+
+    /// The cell the trace's armed force attacks toward. A plan that names
+    /// legs moves the force along them: the last leg whose tick has come
+    /// names the cell, and no order is sent before the first leg starts.
+    /// A plan without legs keeps the push cell.
+    fn trace_destination(&self, tick: u64) -> Option<(u16, u16)> {
+        Self::destination_for(&self.target, tick)
+    }
+
+    /// The cell a trace's armed force attacks toward at a tick.
+    fn destination_for(target: &OpeningTarget, tick: u64) -> Option<(u16, u16)> {
+        let OpeningTarget::TriggerTrace { push, legs, .. } = target else {
+            return None;
+        };
+        let Some((legs, count)) = legs else {
+            return *push;
+        };
+        legs.iter()
+            .take(*count as usize)
+            .filter(|(at, _)| *at <= tick)
+            .last()
+            .map(|(_, cell)| *cell)
+    }
+
+    fn issue_trace_capture(&mut self, state: &mut AppState, cells: &[(u16, u16)]) -> Result<()> {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::command::Command;
+        use crate::sim::world::EngineerBuildingAction;
+
+        let runtime = state
+            .match_state
+            .sim_runtime
+            .runtime()
+            .context("campaign runtime")?;
+        let sim = &runtime.simulation;
+        let rules = &runtime.resources.rules;
+        let player = sim.session().current_house().context("campaign player")?;
+        // The probe plays the scripted objective with the map's own
+        // knowledge: a human player would scout the cell first, the map's
+        // objective names the building. The fog reading stays in the receipt.
+        let building_at = |(x, y)| {
+            let id = sim.occupancy().first_building_on_layer(
+                x,
+                y,
+                crate::sim::movement::locomotor::MovementLayer::Ground,
+            )?;
+            sim.entities()
+                .get(id)
+                .filter(|entity| entity.is_ai_alive())
+                .map(|entity| (id, entity))
+        };
+        let tick = sim.session().tick();
+        // Every named cell is reported, so the receipt shows the whole
+        // objective and not only the building the probe is after.
+        let cell_observations = cells
+            .iter()
+            .map(|&cell| match building_at(cell) {
+                Some((id, entity)) => json!({
+                    "id": id,
+                    "cell": cell,
+                    "type": sim.interner().resolve(entity.type_ref()),
+                    "owner": sim.interner().resolve(entity.owner()),
+                    "visible": sim.fog().is_cell_visible(player, cell.0, cell.1),
+                }),
+                None => json!({"cell": cell, "building": Value::Null}),
+            })
+            .collect::<Vec<_>>();
+        let mut probe = json!({"cells": cell_observations});
+        // The capture list is worked in the order it was named: the first
+        // building the player does not own is the next one.
+        let target = next_capture_cell(cells, |cell| {
+            building_at(cell).map(|(id, entity)| (id, entity.owner() == player))
+        });
+        let in_flight = self.capture_in_flight.is_some();
+        let engineers = || {
+            sim.entities().iter_sorted().filter(|(_, entity)| {
+                entity.is_ai_alive()
+                    && entity.owner() == player
+                    && entity.category() == EntityCategory::Infantry
+                    && rules
+                        .object(sim.interner().resolve(entity.type_ref()))
+                        .is_some_and(|object| object.engineer)
+            })
+        };
+        probe["engineers"] = json!(
+            engineers()
+                .map(|(id, entity)| {
+                    json!({
+                        "id": id,
+                        "cell": [entity.position.rx(), entity.position.ry()],
+                        "mission": format!("{:?}", entity.passive_acquire_mission()),
+                    })
+                })
+                .collect::<Vec<_>>()
+        );
+        let engineer = if in_flight {
+            None
+        } else {
+            target.and_then(|(target, _)| {
+                engineers().find_map(|(id, entity)| {
+                    (!entity.lifecycle.in_limbo()
+                        && engineer_is_free(
+                            entity.mission.current(),
+                            entity.mission.queued(),
+                            entity.mission.suspended(),
+                        )
+                        && sim.engineer_building_action(id, target, rules)
+                            == Some(EngineerBuildingAction::Capture))
+                    .then_some((
+                        id,
+                        entity.position.rx(),
+                        entity.position.ry(),
+                        entity.passive_acquire_mission(),
+                    ))
+                })
+            })
+        };
+        // The engineer the probe watches is the one it ordered, or the one
+        // that still carries an order.
+        let watched = if in_flight {
+            self.capture_in_flight.and_then(|entry| {
+                let order = self.capture_orders.get(entry.order)?;
+                sim.entities().get(order.engineer).map(|entity| {
+                    (
+                        order.engineer,
+                        entity.position.rx(),
+                        entity.position.ry(),
+                        entity.passive_acquire_mission(),
+                    )
+                })
+            })
+        } else {
+            engineer
+        };
+        let target_owner = target.and_then(|(id, _)| {
+            sim.entities()
+                .get(id)
+                .map(|entity| sim.interner().resolve(entity.owner()).to_owned())
+        });
+        probe["target"] = match target {
+            Some((id, cell)) => json!({"id": id, "cell": [cell.0, cell.1]}),
+            None => Value::Null,
+        };
+        probe["engineer"] = match watched {
+            Some((id, x, y, mission)) => json!({
+                "id": id, "cell": [x, y], "mission": format!("{mission:?}")}),
+            None => Value::Null,
+        };
+        let has_target = target.is_some();
+        let has_engineer = engineer.is_some();
+        let mut accepted = false;
+        if let (Some((target, cell)), Some((engineer, x, y, _))) = (target, engineer) {
+            let owner = sim.interner().resolve(player).to_owned();
+            accepted = crate::app::input::commands::try_schedule_command(
+                state,
+                &owner,
+                Command::CaptureBuilding {
+                    engineer_id: engineer,
+                    target_building_id: target,
+                },
+            )
+            .is_some();
+            if accepted {
+                let start_cell = (x, y);
+                self.capture_in_flight = Some(CaptureInFlight {
+                    order: self.capture_orders.len(),
+                    carrying: false,
+                });
+                self.capture_orders.push(CaptureOrder {
+                    tick,
+                    engineer,
+                    target,
+                    cell,
+                    completed: None,
+                    start_cell,
+                    last_cell: start_cell,
+                    dropped: None,
+                    health: Vec::new(),
+                    threats: Vec::new(),
+                });
+            }
+        }
+        let waiting = if !has_target {
+            "no named building is left to capture"
+        } else if in_flight {
+            "the named building's capture order is still running"
+        } else if !has_engineer {
+            "no engineer of the player waits for orders"
+        } else if !accepted {
+            "the capture order was refused"
+        } else {
+            "capture order issued"
+        };
+        probe["accepted"] = json!(accepted);
+        probe["waiting"] = json!(waiting);
+        if !in_flight {
+            self.append_capture_log(
+                tick,
+                json!({
+                    "engineer": probe["engineer"],
+                    "target": probe["target"],
+                    "target_owner": target_owner,
+                    "waiting": waiting,
+                }),
+            );
+        }
+        self.capture_probe = Some(probe);
+        Ok(())
+    }
+
+    fn append_capture_log(&mut self, tick: u64, mut entry: Value) {
+        if self.capture_log.last().is_some_and(|last| {
+            entry.as_object().is_some_and(|fields| {
+                fields
+                    .iter()
+                    .all(|(key, value)| last.get(key) == Some(value))
+            })
+        }) {
+            return;
+        }
+        entry["tick"] = json!(tick);
+        self.capture_log.push(entry);
+    }
+
+    /// Update only the active attempt, including on the terminal frame.
+    fn note_capture_progress(&mut self, state: &AppState) {
+        let Some(mut in_flight) = self.capture_in_flight else {
+            return;
+        };
+        let Some(runtime) = state.match_state.sim_runtime.runtime() else {
+            return;
+        };
+        let sim = &runtime.simulation;
+        let Some(player) = sim.session().current_house() else {
+            return;
+        };
+        let Some(order) = self.capture_orders.get_mut(in_flight.order) else {
+            return;
+        };
+        let tick = sim.session().tick();
+        let target = sim.entities().get(order.target);
+        let engineer = sim.entities().get(order.engineer);
+        let mission = engineer.map(|entity| entity.passive_acquire_mission());
+        if let Some(entity) = engineer {
+            order.last_cell = (entity.position.rx(), entity.position.ry());
+            // The engineer's health and the units next to it are the
+            // evidence for how the order ended: infantry leave the world
+            // at death, so the last reading is what killed them.
+            let health = entity.health.current();
+            if order.health.last().map(|&(_, value)| value) != Some(health) {
+                order.health.push((tick, health));
+                if order.health.len() > 12 {
+                    order.health.remove(0);
+                }
+                order.threats = threats_near(sim, player, order.engineer, order.last_cell);
+            }
+        }
+        let waiting = if target.is_some_and(|entity| entity.owner() == player) {
+            order.completed = Some(tick);
+            "the building changed hands"
+        } else {
+            // The engineer carries the order while it lives. The walk to the
+            // building reports the mission the walk runs, not the capture
+            // order, so only the engineer's own end ends the attempt.
+            let dropped = match engineer {
+                _ if target.is_none_or(|entity| !entity.is_ai_alive()) => {
+                    Some("the building is gone")
+                }
+                None => Some("the engineer is gone"),
+                Some(entity) if !entity.is_ai_alive() => Some("the engineer died"),
+                Some(entity) if entity.owner() != player => Some("the engineer changed sides"),
+                Some(entity) if entity.lifecycle.in_limbo() => Some("the engineer left the field"),
+                Some(_) if mission == Some(MissionType::Capture) => {
+                    in_flight.carrying = true;
+                    None
+                }
+                Some(_)
+                    if mission == Some(MissionType::None)
+                        && tick.saturating_sub(order.tick) > CAPTURE_ORDER_GRACE_TICKS =>
+                {
+                    Some("the order never reached the engineer")
+                }
+                Some(_) => None,
+            };
+            order.dropped = dropped;
+            dropped.unwrap_or("the named building's capture order is still running")
+        };
+        let entry = json!({
+            "engineer": {
+                "id": order.engineer,
+                "cell": order.last_cell,
+                "mission": mission.map(|mission| format!("{mission:?}")),
+                "health": order.health.last().map(|&(_, value)| value),
+            },
+            "target": {"id": order.target, "cell": order.cell},
+            "target_owner": target.map(|entity| sim.interner().resolve(entity.owner())),
+            "capture_mission": in_flight.carrying,
+            "waiting": waiting,
+        });
+        self.capture_in_flight =
+            (order.completed.is_none() && order.dropped.is_none()).then_some(in_flight);
+        self.append_capture_log(tick, entry);
     }
 
     pub(super) fn receipt(&self, state: &AppState) -> Result<Value> {
@@ -892,7 +1456,7 @@ impl OpeningCapture {
             self.ready(state)?,
             "opening readback missed its selected checkpoint"
         );
-        Ok(json!({
+        let mut receipt = json!({
             "target": self.target.phase(), "initial_runtime": self.initial_runtime,
             "exact_steps": self.steps, "observations": self.observations,
             "saw_lock": self.saw_lock, "saw_unlock": self.saw_unlock,
@@ -915,6 +1479,7 @@ impl OpeningCapture {
             "trigger_events": self.trigger_events,
             "push_orders": self.push_orders,
             "outcome": trace_outcome(state),
+            "outcome_frame": self.outcome_frame,
             "houses": if matches!(self.target, OpeningTarget::TriggerTrace { .. }) {
                 Some(trace_houses(state)?)
             } else { None },
@@ -939,7 +1504,80 @@ impl OpeningCapture {
             } else {
                 "one exact production sim/app frame per presented game frame; audio/message service uses its ordinary wall clock"
             },
-        }))
+        });
+        if !self.capture_orders.is_empty() {
+            let sim = &state
+                .match_state
+                .sim_runtime
+                .runtime()
+                .context("campaign runtime")?
+                .simulation;
+            let mut captures = Vec::new();
+            for order in &self.capture_orders {
+                let building = sim.entities().get(order.target);
+                captures.push(json!({
+                    "tick": order.tick,
+                    "engineer_id": order.engineer,
+                    "target_id": order.target,
+                    "cell": [order.cell.0, order.cell.1],
+                    "completed_tick": order.completed,
+                    "engineer_start_cell": [order.start_cell.0, order.start_cell.1],
+                    "engineer_last_cell": [order.last_cell.0, order.last_cell.1],
+                    "dropped": order.dropped,
+                    "health": order.health.iter().map(|&(tick, value)| json!({"tick": tick, "value": value})).collect::<Vec<_>>(),
+                    "threats": order.threats,
+                    "final_owner": building.map(|entity| sim.interner().resolve(entity.owner())),
+                    "type": building.map(|entity| sim.interner().resolve(entity.type_ref())),
+                }));
+            }
+            receipt["captures"] = json!(captures);
+            if let Some(last) = captures.last() {
+                receipt["capture"] = last.clone();
+            }
+        }
+        if let Some(probe) = &self.capture_probe {
+            receipt["capture_probe"] = probe.clone();
+        }
+        if let OpeningTarget::TriggerTrace {
+            legs: Some((legs, count)),
+            ..
+        } = &self.target
+        {
+            receipt["push_legs"] = json!(
+                legs.iter()
+                    .take(*count as usize)
+                    .map(|(at, cell)| json!({"tick": at, "cell": cell}))
+                    .collect::<Vec<_>>()
+            );
+        }
+        if !self.capture_log.is_empty() {
+            receipt["capture_log"] = json!(self.capture_log);
+        }
+        if matches!(
+            self.target,
+            OpeningTarget::TriggerTrace {
+                capture: Some(_),
+                ..
+            }
+        ) {
+            let sim = &state
+                .match_state
+                .sim_runtime
+                .runtime()
+                .context("campaign runtime")?
+                .simulation;
+            if let Some(player) = sim.session().current_house()
+                && let Some(power) = sim.power_states().get(&player)
+            {
+                receipt["power"] = json!({
+                    "house": sim.interner().resolve(player),
+                    "output": power.total_output(),
+                    "drain": power.total_drain(),
+                    "low_power": power.is_low_power(),
+                });
+            }
+        }
+        Ok(receipt)
     }
 }
 
@@ -948,7 +1586,7 @@ fn installed_frame(state: &AppState) -> Result<(u64, u32)> {
         .match_state
         .sim_runtime
         .runtime()
-        .context("load left no installed runtime")?
+        .context("no installed runtime")?
         .simulation
         .session();
     Ok((session.tick(), session.binary_frame()))
@@ -1287,19 +1925,67 @@ fn armed_player_units(state: &AppState) -> Result<(u64, String, Vec<u64>)> {
     ))
 }
 
-/// The local House's campaign outcome, once Flag_To_Win or Flag_To_Lose set it.
+/// A trigger trace stops on the frame that admits the mission's result.
+///
+/// Native does not commit that frame: Main_Tick (0x0055DE4F..0x0055DEC8)
+/// skips commit and deferred destruction while the outcome waits, so the
+/// exact-step receipt cannot show the one tick it demands. Every other
+/// capture still fails loudly on that frame, and so does every other
+/// failure of the step.
+fn trace_stops_on_outcome_frame(
+    target: &OpeningTarget,
+    error: &ExactStepError,
+    sim: &Simulation,
+    owner: Option<InternedId>,
+) -> bool {
+    if !matches!(target, OpeningTarget::TriggerTrace { .. }) {
+        return false;
+    }
+    let Some(owner) = owner else {
+        return false;
+    };
+    match error {
+        // The outcome frame advances no tick, including while the House
+        // waits for Vox before publishing its request to the session.
+        ExactStepError::TickDelta { actual: 0 } => trace_outcome_for(sim, owner).is_some(),
+        // The app left the in-game route, which it does once it routed the
+        // result.
+        ExactStepError::ScreenNotInGame => routed_outcome_for(sim, owner).is_some(),
+        _ => false,
+    }
+}
+
+/// The local player's campaign result once HouseClass::Update admits it.
 fn trace_outcome(state: &AppState) -> Option<&'static str> {
     let sim = &state.match_state.sim_runtime.runtime()?.simulation;
-    let owner = crate::app::input::commands::preferred_local_owner_name(state)
-        .and_then(|name| sim.interner().get(&name))?;
-    let house = sim.houses().get(&owner)?;
-    if house.has_won() {
-        Some("won")
-    } else if house.has_lost() {
-        Some("lost")
-    } else {
-        None
+    trace_outcome_for(sim, sim.session().current_house()?)
+}
+
+/// The result the session routed for one owner.
+///
+/// This is the query the app routes the result with
+/// (Main_Game 0x0048CE8A..0x0048CEA1): the session owns the request after
+/// the House's Vox wait.
+fn routed_outcome_for(sim: &Simulation, owner: InternedId) -> Option<&'static str> {
+    let outcome = sim.ready_outcome_for_owner(owner)?;
+    Some(outcome_name(outcome.kind))
+}
+
+fn outcome_name(kind: crate::sim::house_state::HouseOutcomeKind) -> &'static str {
+    use crate::sim::house_state::HouseOutcomeKind;
+    match kind {
+        HouseOutcomeKind::Victory => "won",
+        HouseOutcomeKind::Defeat => "lost",
     }
+}
+
+/// HouseClass::Update 0x004F85BE/0x004F86FE enters the Vox wait only
+/// after the result timer and AllowWin checks admit the request.
+fn trace_outcome_for(sim: &Simulation, owner: InternedId) -> Option<&'static str> {
+    if sim.session().current_house() != Some(owner) {
+        return None;
+    }
+    routed_outcome_for(sim, owner).or_else(|| sim.pending_outcome_wait().map(outcome_name))
 }
 
 /// End-of-trace House summary: live, non-limbo objects per category.
@@ -1335,4 +2021,216 @@ fn trace_houses(state: &AppState) -> Result<Value> {
             }))
             .collect::<Vec<_>>()
     ))
+}
+
+#[cfg(all(test, tests_app))]
+mod tests {
+    use super::*;
+    use crate::sim::house_state::{HouseOutcomeKind, HouseState};
+    use crate::sim::runtime::SimRuntime;
+    use crate::sim::scenario_session::ScenarioGameMode;
+    use crate::sim::world::{FrameEffects, OutcomeWaitBoundary, TickLane};
+    use std::cell::Cell;
+
+    /// The Vox cue the outcome waits for before the House releases it.
+    struct Vox(Cell<bool>);
+
+    impl OutcomeWaitBoundary for Vox {
+        fn wait_complete(&mut self, _owner: InternedId, _kind: HouseOutcomeKind) -> bool {
+            self.0.get()
+        }
+    }
+
+    fn trace() -> OpeningTarget {
+        OpeningTarget::TriggerTrace {
+            scenario: "ALL01UMD",
+            tick: 900,
+            push: None,
+            capture: None,
+            legs: None,
+        }
+    }
+
+    /// A mission whose result waits for its Vox cue.
+    fn waiting_mission() -> (SimRuntime, InternedId, Vox) {
+        let mut sim = Simulation::with_seed(0x004F_860B);
+        let owner = sim.intern("Human");
+        let mut house = HouseState::new(owner, 0, None, true, 0, 10);
+        assert!(house.accept_win_result(0, 0, false));
+        sim.houses_mut_for_test().register(house);
+        sim.session_mut_for_test()
+            .set_game_mode(ScenarioGameMode::Skirmish);
+        sim.session_mut_for_test()
+            .set_current_house_for_test(Some(owner));
+        let runtime = SimRuntime::from_simulation(sim);
+        (runtime, owner, Vox(Cell::new(false)))
+    }
+
+    #[test]
+    fn the_capture_probe_works_its_list_in_order() {
+        // The first named building the player does not own is the next one to
+        // capture; a cell without a building is skipped, and a building the
+        // player already owns is done.
+        let next = next_capture_cell(&[(10, 10), (15, 15), (20, 20)], |cell| match cell {
+            (10, 10) => Some((1, true)),
+            (20, 20) => Some((2, false)),
+            _ => None,
+        });
+        assert_eq!(next, Some((2, (20, 20))));
+        // Nothing is left to capture.
+        assert_eq!(next_capture_cell(&[(10, 10)], |_| Some((1, true))), None);
+    }
+
+    #[test]
+    fn only_an_engineer_without_an_order_takes_the_capture() {
+        let none = MissionId::NONE;
+        let guard = MissionId::from_known(MissionType::Guard);
+        let capture = MissionId::from_known(MissionType::Capture);
+        let moving = MissionId::from_known(MissionType::Move);
+        assert!(engineer_is_free(none, none, none));
+        assert!(engineer_is_free(guard, none, none));
+        assert!(!engineer_is_free(capture, none, none));
+        assert!(!engineer_is_free(guard, moving, none));
+        assert!(!engineer_is_free(guard, none, moving));
+    }
+
+    #[test]
+    fn the_legs_name_the_cell_the_force_attacks_toward() {
+        let mut legs: TraceLegs = [(0, (0, 0)); MAX_TRACE_LEGS];
+        legs[0] = (300, (90, 107));
+        legs[1] = (1500, (48, 89));
+        let target = OpeningTarget::TriggerTrace {
+            scenario: "ALL03UMD",
+            tick: 1800,
+            push: None,
+            capture: None,
+            legs: Some((legs, 2)),
+        };
+        // Before the first leg no order goes out.
+        assert_eq!(OpeningCapture::destination_for(&target, 299), None);
+        // Each leg holds until the next one starts.
+        assert_eq!(
+            OpeningCapture::destination_for(&target, 300),
+            Some((90, 107))
+        );
+        assert_eq!(
+            OpeningCapture::destination_for(&target, 1499),
+            Some((90, 107))
+        );
+        assert_eq!(
+            OpeningCapture::destination_for(&target, 1500),
+            Some((48, 89))
+        );
+        // A plan without legs keeps its push cell.
+        let push = OpeningTarget::TriggerTrace {
+            scenario: "ALL01UMD",
+            tick: 900,
+            push: Some((112, 120)),
+            capture: None,
+            legs: None,
+        };
+        assert_eq!(OpeningCapture::destination_for(&push, 1), Some((112, 120)));
+    }
+
+    #[test]
+    fn the_threats_are_the_hostile_units_next_to_the_engineer() {
+        // A hostile unit within reach is listed, one that cannot have reached
+        // the engineer is not, and the engineer never appears.
+        let candidates = vec![
+            (1, "ENGINEER".to_owned(), (10, 10), false),
+            (2, "YAGGUN".to_owned(), (12, 11), true),
+            (3, "E1".to_owned(), (20, 20), false),
+        ];
+        let threats = select_threats(1, (10, 10), &candidates);
+        assert_eq!(
+            threats,
+            vec!["YAGGUN#2 at (12,11) targets the engineer".to_owned()]
+        );
+        // A hostile unit four cells away is out of reach.
+        let candidates = vec![(2, "YAGGUN".to_owned(), (14, 10), false)];
+        assert!(select_threats(1, (10, 10), &candidates).is_empty());
+    }
+
+    #[test]
+    fn a_trigger_trace_stops_on_the_outcome_frame_and_other_captures_do_not() {
+        let (mut runtime, owner, mut vox) = waiting_mission();
+        assert_eq!(trace_outcome_for(&runtime.simulation, owner), None);
+        assert!(!trace_stops_on_outcome_frame(
+            &trace(),
+            &ExactStepError::TickDelta { actual: 0 },
+            &runtime.simulation,
+            Some(owner),
+        ));
+        let first = runtime
+            .advance_frame(
+                &[],
+                67,
+                TickLane::Ordinary,
+                &mut FrameEffects::empty().with_outcome_wait(&mut vox),
+            )
+            .unwrap();
+        assert!(first.outcome_waiting);
+        let sim = &runtime.simulation;
+        assert_eq!(trace_outcome_for(sim, owner), Some("won"));
+
+        // The frame that admits the result advances no tick: the trace stops
+        // there instead of failing the step.
+        assert!(trace_stops_on_outcome_frame(
+            &trace(),
+            &ExactStepError::TickDelta { actual: 0 },
+            sim,
+            Some(owner),
+        ));
+        // A step that failed for another reason is still an error.
+        assert!(!trace_stops_on_outcome_frame(
+            &trace(),
+            &ExactStepError::TickDelta { actual: 2 },
+            sim,
+            Some(owner),
+        ));
+        assert!(!trace_stops_on_outcome_frame(
+            &trace(),
+            &ExactStepError::FrameDelta { actual: 0 },
+            sim,
+            Some(owner),
+        ));
+        // Every other capture still fails on the frame native does not commit.
+        assert!(!trace_stops_on_outcome_frame(
+            &OpeningTarget::AlliedTick(900),
+            &ExactStepError::TickDelta { actual: 0 },
+            sim,
+            Some(owner),
+        ));
+    }
+
+    #[test]
+    fn a_routed_result_outranks_the_cleared_house_flag() {
+        let (mut runtime, owner, mut vox) = waiting_mission();
+
+        // A mission result ends the mission: the session routes it, the
+        // House's own flag is cleared once the Vox wait ends (House4F8657),
+        // and the frame that admits it never commits (Main_Tick
+        // 0x0055DE4F..0x0055DEC8). A capture that watches the House flag
+        // alone sees no victory at all.
+        let first = runtime
+            .advance_frame(
+                &[],
+                67,
+                TickLane::Ordinary,
+                &mut FrameEffects::empty().with_outcome_wait(&mut vox),
+            )
+            .unwrap();
+        assert!(first.outcome_waiting);
+
+        vox.0.set(true);
+        let completed = runtime
+            .resume_outcome_wait(&mut FrameEffects::empty().with_outcome_wait(&mut vox))
+            .unwrap();
+        assert!(!completed.outcome_waiting);
+        assert!(!runtime.simulation.houses()[&owner].has_won());
+        assert!(!runtime.simulation.houses()[&owner].has_lost());
+
+        // The capture routes the result the session admitted.
+        assert_eq!(trace_outcome_for(&runtime.simulation, owner), Some("won"));
+    }
 }

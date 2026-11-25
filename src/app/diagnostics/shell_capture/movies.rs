@@ -17,7 +17,11 @@ pub(crate) use lan::{LAN_CHECKPOINTS, LanTarget};
 mod wol;
 pub(crate) use wol::{WOL_CHECKPOINTS, WolTarget};
 mod opening;
-pub(super) use opening::OpeningTarget;
+pub(super) use opening::MAX_TRACE_CAPTURE_CELLS;
+pub(super) use opening::MAX_TRACE_LEGS;
+pub(crate) use opening::OpeningTarget;
+pub(super) use opening::TraceCaptureCells;
+pub(super) use opening::TraceLegs;
 
 /// Native control corpus read from this checkout's `tools/` at capture time.
 /// Diagnostics run from a development checkout, so the release binary does
@@ -514,7 +518,13 @@ impl MoviesCapture {
                     && matches!(
                         state.frontend.screen,
                         GameScreen::Loading | GameScreen::InGame
-                    )),
+                    ))
+                // A mission whose result was admitted leaves the in-game
+                // route for the victory tail; the trace is finished.
+                || self
+                    .opening
+                    .as_ref()
+                    .is_some_and(|opening| opening.mission_ended(state)),
             "movies capture left its admitted shell/loading route"
         );
         ensure!(
@@ -1570,13 +1580,13 @@ impl MoviesCapture {
                 }
                 CampaignStartTarget::InitialSaved => Ok(false),
                 CampaignStartTarget::Opening(_) => {
+                    let opening = self.opening.as_ref().context("opening capture missing")?;
                     if state.frontend.screen != GameScreen::InGame {
-                        return Ok(false);
+                        // The mission whose result was admitted left the
+                        // in-game route for the victory tail.
+                        return Ok(opening.mission_ended(state));
                     }
-                    self.opening
-                        .as_ref()
-                        .context("opening capture missing")?
-                        .ready(state)
+                    opening.ready(state)
                 }
                 CampaignStartTarget::AbortReturn => unreachable!("handled above"),
                 // The restart driver takes over at the first live frame.

@@ -28,6 +28,8 @@ mod score;
 mod skirmish;
 pub(crate) use skirmish::PresentedShell;
 
+use movies::{MAX_TRACE_CAPTURE_CELLS, MAX_TRACE_LEGS, TraceCaptureCells, TraceLegs};
+
 pub(crate) const CAPTURE_FLAG: &str = "--shell-capture";
 const CHECKPOINT_MAIN_MENU_0XE2_STEADY: &str = "main-menu-0xe2-steady";
 const CHECKPOINT_MAIN_MENU_0XE2_ENTRY_SEQUENCE: &str = "main-menu-0xe2-entry-sequence";
@@ -63,9 +65,11 @@ const CHECKPOINT_CAMPAIGN_0X94_ENTRY_PREFIX: &str = "campaign-0x94-entry-tick-";
 const CHECKPOINT_CAMPAIGN_ALL1_LOADING_FIRST: &str = "campaign-all1-loading-first-frame";
 const CHECKPOINT_CAMPAIGN_SOV1_LOADING_FIRST: &str = "campaign-sov1-loading-first-frame";
 const CHECKPOINT_CAMPAIGN_ALL1_FIRST_LIVE: &str = "campaign-all1-first-live-frame";
-/// `campaign-trigger-trace-<MAP>-tick-<N>[-push-<X>-<Y>]`: a retail mission
-/// run to tick N, recording every trigger Spring. Without `-push` there is no
-/// player input; with it the player's armed units attack-move toward Cell X,Y.
+/// `campaign-trigger-trace-<MAP>-tick-<N>[-push-<X>-<Y>][-capture-<X>-<Y>[,...]]`
+/// records trigger Springs from a retail mission. `-push` orders an attack-move
+/// and `-capture` names the buildings the probe captures, in order. The two
+/// segments may come in either order; the push cell and the capture cells
+/// name different places.
 const CHECKPOINT_CAMPAIGN_TRIGGER_TRACE_PREFIX: &str = "campaign-trigger-trace-";
 const CHECKPOINT_CAMPAIGN_SOV1_FIRST_LIVE: &str = "campaign-sov1-first-live-frame";
 const CHECKPOINT_CAMPAIGN_ALL1_ABORT_RETURN: &str = "campaign-all1-abort-return";
@@ -475,17 +479,7 @@ impl ShellCaptureCheckpoint {
                 .iter()
                 .find(|name| name.strip_suffix(".MAP").unwrap().eq_ignore_ascii_case(map))
                 .with_context(|| format!("{map:?} is not a retail campaign map"))?;
-            let (tick, push) = match tick.split_once("-push-") {
-                Some((tick, cell)) => {
-                    let (x, y) = cell
-                        .split_once('-')
-                        .context("trigger trace push is -push-<X>-<Y>")?;
-                    let x: u16 = x.parse().context("trigger trace push X")?;
-                    let y: u16 = y.parse().context("trigger trace push Y")?;
-                    (tick, Some((x, y)))
-                }
-                None => (tick, None),
-            };
+            let (tick, push, capture, legs) = split_trace_segments(tick)?;
             let tick: u64 = tick
                 .parse()
                 .context("trigger trace tick is not an integer")?;
@@ -497,6 +491,8 @@ impl ShellCaptureCheckpoint {
                 scenario,
                 tick,
                 push,
+                capture,
+                legs,
             }));
         }
         if let Some(tick) = value.strip_prefix("campaign-sov02-fortresses-tick-") {
@@ -2031,6 +2027,133 @@ fn parse_u32(value: String, flag: &str) -> Result<u32> {
         .with_context(|| format!("{flag} requires an unsigned integer, got {value:?}"))
 }
 
+/// Read the `-push-<X>-<Y>` cell, the `-capture-<X>-<Y>[,<X>-<Y>...]` cell
+/// list and the `-legs-<tick>-<X>-<Y>[,<tick>-<X>-<Y>...]` leg list of a
+/// trigger trace checkpoint. The segments may come in any order. Push names
+/// the units' attack-move destination. Capture names the building cells to
+/// attempt in order as engineers become available. Legs name the cells the
+/// units attack toward in turn, each from its own tick.
+fn split_trace_segments(
+    value: &str,
+) -> Result<(
+    &str,
+    Option<(u16, u16)>,
+    Option<(TraceCaptureCells, u8)>,
+    Option<(TraceLegs, u8)>,
+)> {
+    let push_at = value.find("-push-");
+    let capture_at = value.find("-capture-");
+    let legs_at = value.find("-legs-");
+    let head = match push_at.into_iter().chain(capture_at).chain(legs_at).min() {
+        Some(index) => &value[..index],
+        None => value,
+    };
+    // A segment runs to the next segment that starts after it.
+    let end_of = |start: usize| {
+        push_at
+            .into_iter()
+            .chain(capture_at)
+            .chain(legs_at)
+            .filter(|at| *at > start)
+            .min()
+            .unwrap_or(value.len())
+    };
+    let push = match push_at {
+        Some(index) => {
+            let start = index + "-push-".len();
+            let cell = value
+                .get(start..end_of(index))
+                .context("trigger trace -push cell is missing")?;
+            Some(parse_trace_cell(cell, "-push-")?)
+        }
+        None => None,
+    };
+    let capture = match capture_at {
+        Some(index) => {
+            let start = index + "-capture-".len();
+            let cells = value
+                .get(start..end_of(index))
+                .context("trigger trace -capture cells are missing")?;
+            Some(parse_trace_capture_cells(cells)?)
+        }
+        None => None,
+    };
+    let legs = match legs_at {
+        Some(index) => {
+            let start = index + "-legs-".len();
+            let cells = value
+                .get(start..end_of(index))
+                .context("trigger trace -legs cells are missing")?;
+            Some(parse_trace_legs(cells)?)
+        }
+        None => None,
+    };
+    Ok((head, push, capture, legs))
+}
+
+/// Read the ordered `-legs-<tick>-<X>-<Y>[,<tick>-<X>-<Y>...]` list. The
+/// legs keep the tick order, so the last leg that has come names the cell
+/// the units attack toward.
+fn parse_trace_legs(cells: &str) -> Result<(TraceLegs, u8)> {
+    let mut parsed: TraceLegs = [(0, (0, 0)); MAX_TRACE_LEGS];
+    let mut count = 0usize;
+    for entry in cells.split(',') {
+        ensure!(
+            count < MAX_TRACE_LEGS,
+            "trigger trace -legs names at most {} legs",
+            MAX_TRACE_LEGS
+        );
+        let (at, cell) = entry
+            .split_once('-')
+            .context("trigger trace -legs entries are <tick>-<X>-<Y>")?;
+        let at: u64 = at.parse().context("trigger trace -legs tick")?;
+        let (x, y) = cell
+            .split_once('-')
+            .context("trigger trace -legs entry is <tick>-<X>-<Y>")?;
+        parsed[count] = (
+            at,
+            (
+                x.parse().context("trigger trace -legs X")?,
+                y.parse().context("trigger trace -legs Y")?,
+            ),
+        );
+        count += 1;
+    }
+    ensure!(count > 0, "trigger trace -legs names no leg");
+    parsed[..count].sort_by_key(|(at, _)| *at);
+    Ok((parsed, count as u8))
+}
+
+/// Read one `<X>-<Y>` cell of a trigger trace checkpoint.
+fn parse_trace_cell(cell: &str, flag: &str) -> Result<(u16, u16)> {
+    let (x, y) = cell
+        .split_once('-')
+        .with_context(|| format!("trigger trace {flag}<X>-<Y> expected"))?;
+    Ok((
+        x.parse()
+            .with_context(|| format!("trigger trace {flag} X"))?,
+        y.parse()
+            .with_context(|| format!("trigger trace {flag} Y"))?,
+    ))
+}
+
+/// Read the ordered `-capture-<X>-<Y>[,<X>-<Y>...]` building cells.
+fn parse_trace_capture_cells(cells: &str) -> Result<(TraceCaptureCells, u8)> {
+    let mut parsed: TraceCaptureCells = [(0u16, 0u16); MAX_TRACE_CAPTURE_CELLS];
+    let mut count = 0usize;
+    for cell in cells.split(',') {
+        ensure!(
+            count < MAX_TRACE_CAPTURE_CELLS,
+            "trigger trace -capture names at most {} cells",
+            MAX_TRACE_CAPTURE_CELLS
+        );
+        parsed[count] = parse_trace_cell(cell, "-capture-")?;
+        count += 1;
+    }
+    ensure!(count > 0, "trigger trace -capture names no cell");
+    Ok((parsed, count as u8))
+}
+
 fn set_once<T>(slot: &mut Option<T>, value: T, flag: &str) -> Result<()> {
     ensure!(slot.is_none(), "duplicate shell-capture option {flag}");
     *slot = Some(value);
@@ -2294,7 +2417,9 @@ impl ShellCaptureSession {
             ShellCaptureCheckpoint::Skirmish0x102GameOptions => {
                 Some(skirmish::SkirmishCapture::game_options())
             }
-            ShellCaptureCheckpoint::Skirmish0x102Setups => Some(skirmish::SkirmishCapture::setups()),
+            ShellCaptureCheckpoint::Skirmish0x102Setups => {
+                Some(skirmish::SkirmishCapture::setups())
+            }
             ShellCaptureCheckpoint::Skirmish0x102BackSlideOut(tick) => {
                 Some(skirmish::SkirmishCapture::slide_out(tick))
             }
@@ -3858,7 +3983,10 @@ mod tests {
     fn skirmish_in_game_menu_checkpoints_round_trip_with_the_game_budget() {
         for (name, target) in SKIRMISH_IN_GAME_MENU_CHECKPOINTS {
             let checkpoint = ShellCaptureCheckpoint::parse(name).expect("in-game menu checkpoint");
-            assert_eq!(checkpoint, ShellCaptureCheckpoint::SkirmishInGameMenu(target));
+            assert_eq!(
+                checkpoint,
+                ShellCaptureCheckpoint::SkirmishInGameMenu(target)
+            );
             assert_eq!(checkpoint.as_str(), name);
         }
         let output = new_output_path("skirmish-pause-menu");
@@ -4358,12 +4486,36 @@ mod tests {
     #[test]
     fn trigger_trace_checkpoint_selects_the_named_retail_mission_and_its_side() {
         use crate::ui::campaign_shell::CampaignSide;
-        for (name, side, scenario, tick, push) in [
+        let capture_cells: movies::TraceCaptureCells = [
+            (125, 83),
+            (130, 129),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+        ];
+        assert_eq!(movies::MAX_TRACE_CAPTURE_CELLS, capture_cells.len());
+        let leg_cells: movies::TraceLegs = [
+            (300, (90, 107)),
+            (1500, (48, 89)),
+            (0, (0, 0)),
+            (0, (0, 0)),
+            (0, (0, 0)),
+            (0, (0, 0)),
+            (0, (0, 0)),
+            (0, (0, 0)),
+        ];
+        assert_eq!(movies::MAX_TRACE_LEGS, leg_cells.len());
+        for (name, side, scenario, tick, push, capture, legs) in [
             (
                 "campaign-trigger-trace-all04dmd-tick-9000",
                 CampaignSide::Allied,
                 "ALL04DMD.MAP",
                 9000,
+                None,
+                None,
                 None,
             ),
             (
@@ -4372,6 +4524,8 @@ mod tests {
                 "SOV07TMD.MAP",
                 1,
                 None,
+                None,
+                None,
             ),
             (
                 "campaign-trigger-trace-ALL02UMD-tick-18000-push-83-88",
@@ -4379,12 +4533,45 @@ mod tests {
                 "ALL02UMD.MAP",
                 18000,
                 Some((83, 88)),
+                None,
+                None,
+            ),
+            (
+                "campaign-trigger-trace-ALL01UMD-tick-18000-push-125-83-capture-125-83,130-129",
+                CampaignSide::Allied,
+                "ALL01UMD.MAP",
+                18000,
+                Some((125, 83)),
+                Some((capture_cells, 2)),
+                None,
+            ),
+            (
+                // The two segments may come in either order.
+                "campaign-trigger-trace-ALL01UMD-tick-18000-capture-125-83,130-129-push-91-105",
+                CampaignSide::Allied,
+                "ALL01UMD.MAP",
+                18000,
+                Some((91, 105)),
+                Some((capture_cells, 2)),
+                None,
+            ),
+            (
+                // The legs keep the tick order, whatever order they are named in.
+                "campaign-trigger-trace-ALL03UMD-tick-18000-legs-1500-48-89,300-90-107",
+                CampaignSide::Allied,
+                "ALL03UMD.MAP",
+                18000,
+                None,
+                None,
+                Some((leg_cells, 2)),
             ),
         ] {
             let target = movies::OpeningTarget::TriggerTrace {
                 scenario,
                 tick,
                 push,
+                capture,
+                legs,
             };
             assert_eq!(
                 ShellCaptureCheckpoint::parse(name).unwrap().movies_target(),
@@ -4400,10 +4587,46 @@ mod tests {
             "campaign-trigger-trace-ALL01UMD-tick-30001",
             "campaign-trigger-trace-ALL01UMD",
             "campaign-trigger-trace-ALL01UMD-tick-100-push-5",
+            "campaign-trigger-trace-ALL01UMD-tick-100-capture-125",
+            "campaign-trigger-trace-ALL01UMD-tick-100-capture-125-65536",
+            "campaign-trigger-trace-ALL01UMD-tick-100-capture-1-1,2-2,3-3,4-4,5-5,6-6,7-7,8-8,9-9",
             "campaign-trigger-trace-ALL01UMD-tick-100-push--1-5",
+            "campaign-trigger-trace-ALL01UMD-tick-100-push-capture-1-1",
+            "campaign-trigger-trace-ALL01UMD-tick-100-legs-abc-1-1",
+            "campaign-trigger-trace-ALL01UMD-tick-100-legs-100-1",
+            "campaign-trigger-trace-ALL01UMD-tick-100-legs-100-1-1,200-2-2,300-3-3,400-4-4,500-5-5,600-6-6,700-7-7,800-8-8,900-9-9",
+            "campaign-trigger-trace-ALL01UMD-tick-100-capture-push-1-1",
         ] {
             assert!(ShellCaptureCheckpoint::parse(invalid).is_err());
         }
+        // The capture list holds exactly as many cells as the probe may name.
+        let eight: movies::TraceCaptureCells = [
+            (1, 1),
+            (2, 2),
+            (3, 3),
+            (4, 4),
+            (5, 5),
+            (6, 6),
+            (7, 7),
+            (8, 8),
+        ];
+        assert_eq!(
+            ShellCaptureCheckpoint::parse(
+                "campaign-trigger-trace-ALL01UMD-tick-100-capture-1-1,2-2,3-3,4-4,5-5,6-6,7-7,8-8",
+            )
+            .unwrap()
+            .movies_target(),
+            Some(movies::MoviesTarget::CampaignStart {
+                side: CampaignSide::Allied,
+                target: movies::CampaignStartTarget::Opening(movies::OpeningTarget::TriggerTrace {
+                    scenario: "ALL01UMD.MAP",
+                    tick: 100,
+                    push: None,
+                    capture: Some((eight, 8)),
+                    legs: None,
+                },),
+            })
+        );
     }
 
     #[test]
