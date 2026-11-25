@@ -45,6 +45,13 @@ const KRATOS_FLH: u32 = 0x9F1B_D701;
 // webbed, end frame 0 has passed, no warhead webs and no type has Struggle
 // frames.
 const TS_WEBS: u32 = 0xF215_BF3A;
+// The base plan's defense cells (`HouseClass+0x5738`, read by `BaseClass::Load`
+// at 0x0042EE30) join the saved shape: the plan's own nodes carry the defenses
+// it placed, and the vector names the cells the base supplies. This build
+// writes the `TS_WEBS` shape plus that vector, so its layout id differs from
+// every writer above. Recompute it with `snapshot-layout` when the saved shape
+// changes, as the writer's own layout id does.
+const BASE_PLAN_DEFENSE_CELLS: u32 = 0xA534_937B;
 
 /// The rules digest a converted save carries: the loader takes the rules the
 /// game has instead of proving the digest the old writer computed, whose
@@ -78,7 +85,7 @@ pub fn supports(header: &GameSnapshotHeader) -> bool {
         && previous_layout(header.layout).is_some()
         && header.compatibility().matches_build()
         && SNAPSHOT_ENVELOPE_VERSION == MIGRATION_ENVELOPE_VERSION
-        && snapshot_layout() == TS_WEBS
+        && snapshot_layout() == BASE_PLAN_DEFENSE_CELLS
 }
 
 fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
@@ -102,6 +109,10 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
     const WEB_TIMER: (&str, &[&str]) = ("Seldom", &["web"]);
     const WARHEAD_WEB: (&str, &[&str]) = ("WarheadAnimReadState", &["web"]);
     const STRUGGLE: (&str, &[&str]) = ("InfantrySequenceBank", &["struggle"]);
+    // The base plan's defense cells (`HouseClass+0x5738`). Every writer above
+    // the one that added them holds no vector, so the cells a base supplies
+    // convert as an empty list.
+    const DEFENSE_CELLS: (&str, &[&str]) = ("BasePlanState", &["defense_cells"]);
     let absent_fields: &'static [_] = match source {
         V0_3_8_AND_0_3_9 | V0_4_0 => &[
             IMAGE_FLAGS,
@@ -123,6 +134,7 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             WEB_TIMER,
             WARHEAD_WEB,
             STRUGGLE,
+            DEFENSE_CELLS,
         ],
         ALPHA_SHAPE_LISTENER => &[
             IMAGE_FLAGS,
@@ -143,6 +155,7 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             WEB_TIMER,
             WARHEAD_WEB,
             STRUGGLE,
+            DEFENSE_CELLS,
         ],
         ALTERNATE_THEATER_ART => &[
             DECK,
@@ -162,6 +175,7 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             WEB_TIMER,
             WARHEAD_WEB,
             STRUGGLE,
+            DEFENSE_CELLS,
         ],
         BRIDGE_DECK_AND_FLY_SPIN => &[
             DEGRADES,
@@ -178,6 +192,7 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             WEB_TIMER,
             WARHEAD_WEB,
             STRUGGLE,
+            DEFENSE_CELLS,
         ],
         HOUSE_DEGRADES => &[
             ICE_TIMER,
@@ -193,6 +208,7 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             WEB_TIMER,
             WARHEAD_WEB,
             STRUGGLE,
+            DEFENSE_CELLS,
         ],
         TS_ICE => &[
             DENT,
@@ -205,6 +221,7 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             WEB_TIMER,
             WARHEAD_WEB,
             STRUGGLE,
+            DEFENSE_CELLS,
         ],
         TERRAIN_DENT => &[
             LIMPETS,
@@ -216,6 +233,7 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             WEB_TIMER,
             WARHEAD_WEB,
             STRUGGLE,
+            DEFENSE_CELLS,
         ],
         TS_LIMPETS => &[
             ANIM_SOUNDS,
@@ -225,6 +243,7 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             WEB_TIMER,
             WARHEAD_WEB,
             STRUGGLE,
+            DEFENSE_CELLS,
         ],
         TS_ANIM_SOUNDS => &[
             KRATOS_INPUTS,
@@ -233,8 +252,13 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             WEB_TIMER,
             WARHEAD_WEB,
             STRUGGLE,
+            DEFENSE_CELLS,
         ],
-        KRATOS_FLH => &[WEB, WEB_TIMER, WARHEAD_WEB, STRUGGLE],
+        KRATOS_FLH => &[WEB, WEB_TIMER, WARHEAD_WEB, STRUGGLE, DEFENSE_CELLS],
+        // Tiberian Sun webs were the last upstream writer. Its worlds hold no
+        // defense-cell vector: the base plan's nodes carry the defenses it
+        // placed, and the vector that names the supplied cells converts empty.
+        TS_WEBS => &[DEFENSE_CELLS],
         _ => return None,
     };
     Some(save_codec::PreviousLayout {
@@ -250,7 +274,8 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
 /// only its stock Arctic setting and latch. Keep both exactly as saved.
 pub fn migrate(bytes: &mut Vec<u8>) -> Result<(), MigrationError> {
     let target = snapshot_layout();
-    if SNAPSHOT_ENVELOPE_VERSION != MIGRATION_ENVELOPE_VERSION || target != TS_WEBS {
+    if SNAPSHOT_ENVELOPE_VERSION != MIGRATION_ENVELOPE_VERSION || target != BASE_PLAN_DEFENSE_CELLS
+    {
         return Err(MigrationError::UnsupportedTarget(target));
     }
 
@@ -382,7 +407,9 @@ mod tests {
         let original = bytes.clone();
         let error = migrate(&mut bytes).unwrap_err();
         assert_eq!(bytes, original);
-        if SNAPSHOT_ENVELOPE_VERSION != MIGRATION_ENVELOPE_VERSION || snapshot_layout() != TS_WEBS {
+        if SNAPSHOT_ENVELOPE_VERSION != MIGRATION_ENVELOPE_VERSION
+            || snapshot_layout() != BASE_PLAN_DEFENSE_CELLS
+        {
             assert!(matches!(error, MigrationError::UnsupportedTarget(_)));
             return;
         }
