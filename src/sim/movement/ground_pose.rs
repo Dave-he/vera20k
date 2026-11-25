@@ -175,9 +175,7 @@ impl Position {
             self.put_z(deck.wrapping_add(height));
             return;
         }
-        let Some(ground) = ground_at(world_xy, terrain, path_grid) else {
-            return;
-        };
+        let ground = ground_at(world_xy, terrain, path_grid).unwrap_or(0);
         self.put_z(z_at_height(ground, height, on_bridge));
     }
 
@@ -374,11 +372,7 @@ fn ground_height_in_cell(
 ///
 /// The ground is a height and never a failure (see [`query_ground_height`]),
 /// so this answers a Z for every cell too.
-pub fn query_surface_z(
-    cells: &NativeCellQuery<'_>,
-    point: DriveCoord,
-    on_bridge: bool,
-) -> i32 {
+pub fn query_surface_z(cells: &NativeCellQuery<'_>, point: DriveCoord, on_bridge: bool) -> i32 {
     let cell = cells.lookup_world(point.x, point.y);
     if on_bridge && let Some(deck) = corrected_deck_z(cells.terrain(), cell) {
         return deck;

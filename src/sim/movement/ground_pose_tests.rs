@@ -921,8 +921,8 @@ fn idle_drive_keeps_supplied_raw_height() {
 
 /// SetHeight (`0x005F5FA0`) writes the ground under the Location plus the
 /// height, plus the deck OnBridge. The ground comes from resolved terrain,
-/// else a PathGrid, else the Dummy cell's flat level 0. An unsupported slope
-/// leaves Z alone.
+/// else a PathGrid, else the Dummy cell's flat level 0. A slope outside the
+/// native table reads as flat ground at the cell's level.
 #[test]
 fn set_height_samples_terrain_then_path_grid_then_the_dummy_ground() {
     use crate::util::lepton::BRIDGE_DECK_HEIGHT_LEPTONS;
@@ -945,10 +945,7 @@ fn set_height_samples_terrain_then_path_grid_then_the_dummy_ground() {
     );
     terrain.cell_mut_for_test(3, 3).unwrap().slope_type = 21;
     position.set_height(false, 0, Some(&terrain), None);
-    assert_eq!(
-        position.exact_z_leptons(),
-        Some(BRIDGE_DECK_HEIGHT_LEPTONS + 10)
-    );
+    assert_eq!(position.exact_z_leptons(), Some(208));
 }
 
 #[test]
