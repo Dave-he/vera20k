@@ -2028,8 +2028,9 @@ fn parse_u32(value: String, flag: &str) -> Result<u32> {
 /// Read the player orders of a trigger trace checkpoint. The checkpoint names
 /// the `-push-<X>-<Y>` cell, the `-capture-<X>-<Y>[,<X>-<Y>...]` cell list,
 /// the `-legs-<tick>-<X>-<Y>[,<tick>-<X>-<Y>...]` leg list, the
-/// `-train-<TYPE>-<N>[,<TYPE>-<N>...]` unit list and the
-/// `-capture-after-<TICK>` delay. The segments may come in any order.
+/// `-train-<TYPE>-<N>[,<TYPE>-<N>...]` unit list, the
+/// `-capture-after-<TICK>` delay and the `-film-<TICKS>` screenshot interval.
+/// The segments may come in any order.
 fn split_trace_segments(value: &str) -> Result<(&str, TraceOrders)> {
     // The capture list and the capture delay both start with "-capture-", so
     // the list is the "-capture-" that is not the start of "-capture-after-".
@@ -2041,7 +2042,15 @@ fn split_trace_segments(value: &str) -> Result<(&str, TraceOrders)> {
     let push_at = value.find("-push-");
     let legs_at = value.find("-legs-");
     let train_at = value.find("-train-");
-    let starts = [push_at, capture_at, legs_at, train_at, capture_after_at];
+    let film_at = value.find("-film-");
+    let starts = [
+        push_at,
+        capture_at,
+        legs_at,
+        train_at,
+        capture_after_at,
+        film_at,
+    ];
     let head = match starts.iter().flatten().copied().min() {
         Some(index) => &value[..index],
         None => value,
@@ -2091,6 +2100,15 @@ fn split_trace_segments(value: &str) -> Result<(&str, TraceOrders)> {
             .get(start..end_of(index))
             .context("trigger trace -capture-after tick is missing")?;
         orders.capture_after = Some(tick.parse().context("trigger trace -capture-after tick")?);
+    }
+    if let Some(index) = film_at {
+        let start = index + "-film-".len();
+        let every = value
+            .get(start..end_of(index))
+            .context("trigger trace -film interval is missing")?;
+        let every: u64 = every.parse().context("trigger trace -film interval")?;
+        ensure!(every > 0, "trigger trace -film interval must be positive");
+        orders.film_every = Some(every);
     }
     Ok((head, orders))
 }
@@ -4608,6 +4626,18 @@ mod tests {
                     ..movies::TraceOrders::default()
                 },
             ),
+            (
+                // The screenshot interval is a player order as well: it names
+                // the pictures the run leaves of the same battle.
+                "campaign-trigger-trace-ALL01UMD-tick-18000-film-300",
+                CampaignSide::Allied,
+                "ALL01UMD.MAP",
+                18000,
+                movies::TraceOrders {
+                    film_every: Some(300),
+                    ..movies::TraceOrders::default()
+                },
+            ),
         ] {
             let target = movies::OpeningTarget::TriggerTrace {
                 scenario,
@@ -4642,6 +4672,8 @@ mod tests {
             "campaign-trigger-trace-ALL01UMD-tick-100-train-ENGINEER-many",
             "campaign-trigger-trace-ALL01UMD-tick-100-train-A-VERY-LONG-UNIT-TYPE-NAME-1",
             "campaign-trigger-trace-ALL01UMD-tick-100-capture-after-abc",
+            "campaign-trigger-trace-ALL01UMD-tick-100-film-abc",
+            "campaign-trigger-trace-ALL01UMD-tick-100-film-0",
         ] {
             assert!(ShellCaptureCheckpoint::parse(invalid).is_err());
         }

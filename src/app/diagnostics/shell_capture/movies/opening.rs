@@ -103,7 +103,9 @@ const CAPTURE_ORDER_GRACE_TICKS: u64 = 120;
 /// buildings the probe captures, in order, as engineers become available.
 /// `legs` names the cells the units attack toward in turn, each from its own
 /// tick. `train` names the units the player trains. `capture_after` is the
-/// tick the capture orders may first be issued on.
+/// tick the capture orders may first be issued on. `film_every` is the tick
+/// interval the retail screenshot key is pressed on, so the run leaves the
+/// pictures a player would take of the same battle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TraceOrders {
     /// The cell the armed force attacks toward.
@@ -116,6 +118,8 @@ pub struct TraceOrders {
     pub train: TraceTrain,
     /// The tick the capture orders may first be issued on.
     pub capture_after: Option<u64>,
+    /// The tick interval the retail screenshot key is pressed on.
+    pub film_every: Option<u64>,
 }
 
 /// One accepted capture order and how it ended.
@@ -144,8 +148,9 @@ struct CaptureOrder {
     threats: Vec<String>,
 }
 
-/// The probe sends one capture at a time. Keep progress attached to the
-/// individual attempt even if another order uses the same engineer or cell.
+/// The probe runs one capture at a time, as a player does. Keep progress
+/// attached to the individual attempt even if another order uses the same
+/// engineer or cell.
 #[derive(Clone, Copy)]
 struct CaptureInFlight {
     order: usize,
@@ -371,11 +376,15 @@ pub(super) struct OpeningCapture {
     push_destination: Option<(u16, u16)>,
     /// Accepted captures and their observed results, in issue order.
     capture_orders: Vec<CaptureOrder>,
-    capture_in_flight: Option<CaptureInFlight>,
+    capture_in_flight: Vec<CaptureInFlight>,
     /// The units the plan trains and how many of each.
     train: Vec<(String, u32)>,
     /// The tick the capture orders may first be issued on.
     capture_after: Option<u64>,
+    /// The tick interval the retail screenshot key is pressed on.
+    film_every: Option<u64>,
+    /// The ticks the screenshot key was pressed on, in order.
+    film_ticks: Vec<u64>,
     /// What the capture probe last saw: the named cells, their buildings,
     /// the engineer it picked and whether the order was accepted.
     capture_probe: Option<Value>,
@@ -398,6 +407,7 @@ impl OpeningCapture {
         // The train order is played once, so the capture owns it from here on.
         let mut train = Vec::new();
         let mut capture_after = None;
+        let mut film_every = None;
         if let OpeningTarget::TriggerTrace { orders, .. } = &target {
             train = orders
                 .train
@@ -405,6 +415,7 @@ impl OpeningCapture {
                 .map(|(name, count)| (name.to_string(), count))
                 .collect();
             capture_after = orders.capture_after;
+            film_every = orders.film_every;
         }
         Self {
             target,
@@ -433,8 +444,10 @@ impl OpeningCapture {
             push_orders: Vec::new(),
             push_destination: None,
             capture_orders: Vec::new(),
-            capture_in_flight: None,
+            capture_in_flight: Vec::new(),
             capture_after,
+            film_every,
+            film_ticks: Vec::new(),
             train,
             capture_probe: None,
             capture_log: Vec::new(),
@@ -587,6 +600,9 @@ impl OpeningCapture {
             }
         }
         self.observe(state)?;
+        if let OpeningTarget::TriggerTrace { .. } = self.target {
+            self.request_film_frames(state)?;
+        }
         if let OpeningTarget::TriggerTrace {
             orders: TraceOrders {
                 capture: Some(_), ..
@@ -1181,7 +1197,7 @@ impl OpeningCapture {
         if self.group_orders.is_some() {
             return Ok(());
         }
-        let (tick, owner, ids) = armed_player_units(state)?;
+        let (tick, owner, ids) = armed_player_units(state, false)?;
         if tick < 300 || ids.is_empty() {
             return Ok(());
         }
@@ -1234,7 +1250,13 @@ impl OpeningCapture {
         use crate::sim::combat::TargetKind;
         use crate::sim::command::Command;
         const PERIOD_TICKS: u64 = 900;
-        let (tick, owner, ids) = armed_player_units(state)?;
+        // Engineers carry their own capture orders. The DefuseKit can make
+        // them eligible for the armed group, whose attack-move replaces those orders.
+        let reserve_engineers = matches!(
+            self.target,
+            OpeningTarget::TriggerTrace { orders, .. } if orders.capture.is_some()
+        );
+        let (tick, owner, ids) = armed_player_units(state, reserve_engineers)?;
         let Some(cell) = self.trace_destination(tick) else {
             return Ok(());
         };
@@ -1265,6 +1287,29 @@ impl OpeningCapture {
         }
         self.push_destination = Some(cell);
         self.push_orders.push((tick, ids.len()));
+        Ok(())
+    }
+
+    /// Trigger trace `-film-<TICKS>`: the retail screenshot key, pressed on
+    /// the interval the plan names. The pictures are the player's own view of
+    /// the battle, taken by the ordinary screenshot path.
+    fn request_film_frames(&mut self, state: &mut AppState) -> Result<()> {
+        let Some(every) = self.film_every else {
+            return Ok(());
+        };
+        let tick = {
+            let runtime = state
+                .match_state
+                .sim_runtime
+                .runtime()
+                .context("campaign runtime")?;
+            runtime.simulation.session().tick()
+        };
+        if tick % every != 0 || self.film_ticks.last() == Some(&tick) {
+            return Ok(());
+        }
+        state.match_state.input.retail_screenshot_requested = true;
+        self.film_ticks.push(tick);
         Ok(())
     }
 
@@ -1341,10 +1386,19 @@ impl OpeningCapture {
         let mut probe = json!({"cells": cell_observations});
         // The capture list is worked in the order it was named: the first
         // building the player does not own is the next one.
+        // A building an order already claims is not offered again, so a
+        // running capture keeps its place in the list.
+        let claimed: Vec<u64> = self
+            .capture_in_flight
+            .iter()
+            .filter_map(|entry| self.capture_orders.get(entry.order))
+            .map(|order| order.target)
+            .collect();
         let target = next_capture_cell(cells, |cell| {
-            building_at(cell).map(|(id, entity)| (id, entity.owner() == player))
+            building_at(cell)
+                .map(|(id, entity)| (id, entity.owner() == player || claimed.contains(&id)))
         });
-        let in_flight = self.capture_in_flight.is_some();
+        let in_flight = !self.capture_in_flight.is_empty();
         let engineers = || {
             sim.entities().iter_sorted().filter(|(_, entity)| {
                 entity.is_ai_alive()
@@ -1391,7 +1445,19 @@ impl OpeningCapture {
         // The engineer the probe watches is the one it ordered, or the one
         // that still carries an order.
         let watched = if in_flight {
-            self.capture_in_flight.and_then(|entry| {
+            let entry = target
+                .and_then(|(id, _)| {
+                    self.capture_in_flight
+                        .iter()
+                        .find(|entry| {
+                            self.capture_orders
+                                .get(entry.order)
+                                .is_some_and(|order| order.target == id)
+                        })
+                        .copied()
+                })
+                .or_else(|| self.capture_in_flight.first().copied());
+            entry.and_then(|entry| {
                 let order = self.capture_orders.get(entry.order)?;
                 sim.entities().get(order.engineer).map(|entity| {
                     (
@@ -1435,7 +1501,7 @@ impl OpeningCapture {
             .is_some();
             if accepted {
                 let start_cell = (x, y);
-                self.capture_in_flight = Some(CaptureInFlight {
+                self.capture_in_flight.push(CaptureInFlight {
                     order: self.capture_orders.len(),
                     carrying: false,
                 });
@@ -1496,11 +1562,11 @@ impl OpeningCapture {
         self.capture_log.push(entry);
     }
 
-    /// Update only the active attempt, including on the terminal frame.
+    /// Update only the active attempts, including on the terminal frame.
     fn note_capture_progress(&mut self, state: &AppState) {
-        let Some(mut in_flight) = self.capture_in_flight else {
+        if self.capture_in_flight.is_empty() {
             return;
-        };
+        }
         let Some(runtime) = state.match_state.sim_runtime.runtime() else {
             return;
         };
@@ -1508,118 +1574,122 @@ impl OpeningCapture {
         let Some(player) = sim.session().current_house() else {
             return;
         };
-        let Some(order) = self.capture_orders.get_mut(in_flight.order) else {
-            return;
-        };
         let tick = sim.session().tick();
-        let target = sim.entities().get(order.target);
-        let engineer = sim.entities().get(order.engineer);
-        let mission = engineer.map(|entity| entity.passive_acquire_mission());
-        // The walk's own state: the cell the engineer walks to, the steps
-        // left in its route and the coordinate the building answers as a
-        // navigation goal. They say whether the order kept a goal and
-        // whether the route ran out before it.
-        let walk_goal = engineer.and_then(|entity| {
-            entity
-                .locomotor
-                .as_ref()
-                .and_then(|locomotor| locomotor.walk_destination_cell())
-        });
-        let steps_left = engineer.map(|entity| {
-            entity
-                .navigation
-                .path_replay()
-                .remaining_directions()
-                .len()
-        });
-        let nav_goal = sim
-            .navigation_target_coordinate(
-                crate::sim::components::NavTargetRef::object(order.target),
-                Some(order.engineer),
-                &runtime.resources.rules,
-            )
-            .ok()
-            .map(|coord| {
-                (
-                    (coord.x / 256) as i16 as u16,
-                    (coord.y / 256) as i16 as u16,
-                )
-            });
-        if let Some(entity) = engineer {
-            order.last_cell = (entity.position.rx(), entity.position.ry());
-            // The walk is the evidence for how the order ended: the route
-            // shows the cells the engineer passed and the threats the
-            // receipt names are the ones next to it when it was hit.
-            if order
-                .route
-                .last()
-                .is_none_or(|&(_, cell)| cell != order.last_cell)
-            {
-                order.route.push((tick, order.last_cell));
-                if order.route.len() > 64 {
-                    order.route.remove(0);
-                }
-            }
-            // The engineer's health and the units next to it are the
-            // evidence for how the order ended: infantry leave the world
-            // at death, so the last reading is what killed them.
-            let health = entity.health.current();
-            if order.health.last().map(|&(_, value)| value) != Some(health) {
-                order.health.push((tick, health));
-                if order.health.len() > 12 {
-                    order.health.remove(0);
-                }
-                order.threats = threats_near(sim, player, order.engineer, order.last_cell);
-            }
-        }
-        let waiting = if target.is_some_and(|entity| entity.owner() == player) {
-            order.completed = Some(tick);
-            "the building changed hands"
-        } else {
-            // The engineer carries the order while it lives. The walk to the
-            // building reports the mission the walk runs, not the capture
-            // order, so only the engineer's own end ends the attempt.
-            let dropped = match engineer {
-                _ if target.is_none_or(|entity| !entity.is_ai_alive()) => {
-                    Some("the building is gone")
-                }
-                None => Some("the engineer is gone"),
-                Some(entity) if !entity.is_ai_alive() => Some("the engineer died"),
-                Some(entity) if entity.owner() != player => Some("the engineer changed sides"),
-                Some(entity) if entity.lifecycle.in_limbo() => Some("the engineer left the field"),
-                Some(_) if mission == Some(MissionType::Capture) => {
-                    in_flight.carrying = true;
-                    None
-                }
-                Some(_)
-                    if mission == Some(MissionType::None)
-                        && tick.saturating_sub(order.tick) > CAPTURE_ORDER_GRACE_TICKS =>
-                {
-                    Some("the order never reached the engineer")
-                }
-                Some(_) => None,
+        let attempts = self.capture_in_flight.clone();
+        let mut running = Vec::new();
+        let mut entries = Vec::new();
+        for mut attempt in attempts {
+            let Some(order) = self.capture_orders.get_mut(attempt.order) else {
+                continue;
             };
-            order.dropped = dropped;
-            dropped.unwrap_or("the named building's capture order is still running")
-        };
-        let entry = json!({
-            "engineer": {
-                "id": order.engineer,
-                "cell": order.last_cell,
-                "mission": mission.map(|mission| format!("{mission:?}")),
-                "health": order.health.last().map(|&(_, value)| value),
-                "walk_goal": walk_goal.map(|(x, y)| json!([x, y])),
-                "steps_left": steps_left,
-            },
-            "target": {"id": order.target, "cell": order.cell},
-            "nav_goal": nav_goal.map(|(x, y)| json!([x, y])),
-            "target_owner": target.map(|entity| sim.interner().resolve(entity.owner())),
-            "capture_mission": in_flight.carrying,
-            "waiting": waiting,
-        });
-        self.capture_in_flight =
-            (order.completed.is_none() && order.dropped.is_none()).then_some(in_flight);
-        self.append_capture_log(tick, entry);
+            let target = sim.entities().get(order.target);
+            let engineer = sim.entities().get(order.engineer);
+            let mission = engineer.map(|entity| entity.passive_acquire_mission());
+            // The walk's own state: the cell the engineer walks to, the steps
+            // left in its route and the coordinate the building answers as a
+            // navigation goal. They say whether the order kept a goal and
+            // whether the route ran out before it.
+            let walk_goal = engineer.and_then(|entity| {
+                entity
+                    .locomotor
+                    .as_ref()
+                    .and_then(|locomotor| locomotor.walk_destination())
+                    .map(|coord| ((coord.x / 256) as u16, (coord.y / 256) as u16))
+            });
+            let steps_left =
+                engineer.map(|entity| entity.navigation.path_replay().remaining_directions().len());
+            let nav_goal = sim
+                .navigation_target_coordinate(
+                    crate::sim::components::NavTargetRef::object(order.target),
+                    Some(order.engineer),
+                    &runtime.resources.rules,
+                )
+                .ok()
+                .map(|coord| ((coord.x / 256) as i16 as u16, (coord.y / 256) as i16 as u16));
+            if let Some(entity) = engineer {
+                order.last_cell = (entity.position.rx(), entity.position.ry());
+                // The walk is the evidence for how the order ended: the route
+                // shows the cells the engineer passed and the threats the
+                // receipt names are the ones next to it when it was hit.
+                if order
+                    .route
+                    .last()
+                    .is_none_or(|&(_, cell)| cell != order.last_cell)
+                {
+                    order.route.push((tick, order.last_cell));
+                    if order.route.len() > 64 {
+                        order.route.remove(0);
+                    }
+                }
+                // The engineer's health and the units next to it are the
+                // evidence for how the order ended: infantry leave the world
+                // at death, so the last reading is what killed them.
+                let health = entity.health.current();
+                if order.health.last().map(|&(_, value)| value) != Some(health) {
+                    order.health.push((tick, health));
+                    if order.health.len() > 12 {
+                        order.health.remove(0);
+                    }
+                    order.threats = threats_near(sim, player, order.engineer, order.last_cell);
+                }
+            }
+            let waiting = if target.is_some_and(|entity| entity.owner() == player) {
+                order.completed = Some(tick);
+                "the building changed hands"
+            } else {
+                // The engineer carries the order while it lives. The walk to the
+                // building reports the mission the walk runs, not the capture
+                // order, so only the engineer's own end ends the attempt.
+                let dropped = match engineer {
+                    _ if target.is_none_or(|entity| !entity.is_ai_alive()) => {
+                        Some("the building is gone")
+                    }
+                    None => Some("the engineer is gone"),
+                    Some(entity) if !entity.is_ai_alive() => Some("the engineer died"),
+                    Some(entity) if entity.owner() != player => Some("the engineer changed sides"),
+                    Some(entity) if entity.lifecycle.in_limbo() => {
+                        Some("the engineer left the field")
+                    }
+                    Some(_) if mission == Some(MissionType::Capture) => {
+                        attempt.carrying = true;
+                        None
+                    }
+                    Some(_)
+                        if mission != Some(MissionType::Capture)
+                            && tick.saturating_sub(order.tick) > CAPTURE_ORDER_GRACE_TICKS =>
+                    {
+                        Some("the engineer is no longer walking to the building")
+                    }
+                    Some(_) => None,
+                };
+                order.dropped = dropped;
+                dropped.unwrap_or("the named building's capture order is still running")
+            };
+            let entry = json!({
+                "engineer": {
+                    "id": order.engineer,
+                    "cell": order.last_cell,
+                    "mission": mission.map(|mission| format!("{mission:?}")),
+                    "health": order.health.last().map(|&(_, value)| value),
+                    "walk_goal": walk_goal.map(|(x, y)| json!([x, y])),
+                    "steps_left": steps_left,
+                },
+                "target": {"id": order.target, "cell": order.cell},
+                "nav_goal": nav_goal.map(|(x, y)| json!([x, y])),
+                "target_owner": target.map(|entity| sim.interner().resolve(entity.owner())),
+                "capture_mission": attempt.carrying,
+                "waiting": waiting,
+            });
+            let live = order.completed.is_none() && order.dropped.is_none();
+            if live {
+                running.push(attempt);
+            }
+            entries.push(entry);
+        }
+        self.capture_in_flight = running;
+        for entry in entries {
+            self.append_capture_log(tick, entry);
+        }
     }
 
     pub(super) fn receipt(&self, state: &AppState) -> Result<Value> {
@@ -1728,6 +1798,9 @@ impl OpeningCapture {
         }
         if !self.capture_log.is_empty() {
             receipt["capture_log"] = json!(self.capture_log);
+        }
+        if !self.film_ticks.is_empty() {
+            receipt["film_ticks"] = json!(self.film_ticks);
         }
         if matches!(
             self.target,
@@ -2068,7 +2141,10 @@ fn probe_unlocked_mouse_edges(state: &mut AppState) -> Result<Value> {
 
 /// The current tick, the player's House name and the armed, active, on-map
 /// units a player would send: no buildings, harvesters or unarmed units.
-fn armed_player_units(state: &AppState) -> Result<(u64, String, Vec<u64>)> {
+fn armed_player_units(
+    state: &AppState,
+    reserve_engineers: bool,
+) -> Result<(u64, String, Vec<u64>)> {
     let sim = &state
         .match_state
         .sim_runtime
@@ -2087,6 +2163,7 @@ fn armed_player_units(state: &AppState) -> Result<(u64, String, Vec<u64>)> {
                 && !actor.lifecycle.in_limbo()
                 && actor.category() != crate::map::entities::EntityCategory::Structure
                 && !object.resource_gatherer
+                && !(reserve_engineers && object.engineer)
                 && crate::sim::combat::combat_weapon::is_armed(
                     actor,
                     object,
