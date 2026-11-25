@@ -53,6 +53,7 @@ mod ice;
 mod idle_sleep;
 #[cfg(all(test, tests_sim_world_c_o))]
 mod idle_sleep_tests;
+mod match_handoff;
 mod network_commands;
 mod object_entry;
 mod queued_command;

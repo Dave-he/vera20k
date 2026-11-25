@@ -100,11 +100,20 @@ ai-eval  --map NewHghts.mmx --seeds 4 --policy best.json
 
 `ai-train` plays the same matches for every candidate — the maps and seeds
 on its command line — through `headless_scenario::ai_match`, the same core
-the game plays, and keeps the candidates that score better. The score of a
+the game plays, and keeps the candidates that score better. The match takes
+the same handoff a real match's start takes
+(`Simulation::begin_match_handoff`): every object's turn draws from its own
+stream (`sim::world::turn_streams`), the effect anims run as presentation
+anims and the idle objects sleep. Every house is a computer house, so the
+match measures the game's rules and draws with the player replaced by the
+computer. The score of a
 match is `+1` for a win, `-1` for a loss, and, for an undecided match,
 half the difference in remaining house value divided by the combined value. `ai-eval`
 measures one policy the same way, so a number the trainer found means the
 same thing when it is read back.
+
+A policy trained before the turn streams arrived was tuned against
+shared-stream matches; train it again to measure the current game.
 
 The search is a (μ/μ, λ)-evolution strategy with rank weights: every
 generation samples a population around the current mean, keeps the better
