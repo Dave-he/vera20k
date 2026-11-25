@@ -35,6 +35,8 @@ impl AppState {
                 csf,
             );
         }
+        crate::app::loading::transitions::resolve_status_texts(self);
+        crate::app::input::keyboard::refresh_title(self);
         // The login form keeps its status line as resolved text; the rest of
         // that page resolves every frame.
         if let Some(visit) = self.frontend.wol.as_mut()
@@ -440,7 +442,7 @@ impl App {
             .score_page
             .as_ref()
             .is_some_and(|page| page.page_count() > 1);
-        let rect_of = |id| layout.control_rect(id, paged);
+        let rect_of = |id| layout.node_rect(id, paged);
         let dialog = score::SCORE_DIALOG;
         match Self::screen_page_pointer(state, dialog, score::nodes, rect_of, &[], down) {
             Some(score::CONTINUE_BUTTON) => Self::leave_shell_dialog(
@@ -600,7 +602,7 @@ impl App {
         if state.frontend.external_launch {
             // A relay launch first reports its result to the match service;
             // its live service starts the same quit once that settles.
-            if !crate::app::shell_wol::end_spawned_match(state) {
+            if !crate::app::shell_wol::end_spawned_match(state.frontend.wol.as_mut()) {
                 Self::start_quit_cascade(state);
             }
             return;
@@ -833,12 +835,12 @@ impl App {
     ) -> crate::ui::main_menu_dialogs::options::LauncherOptionsLabels {
         let mut labels =
             crate::ui::main_menu_dialogs::options::LauncherOptionsLabels::resolve(&|key| {
+                // The labels' own fallbacks stand in while no table is loaded.
                 state
                     .process_assets
                     .csf
-                    .as_ref()
-                    .and_then(|csf| csf.get(key))
-                    .map(str::to_owned)
+                    .is_some()
+                    .then(|| state.csf_text(key))
             });
         // VERA's Esc menu opens Options over a page: the button returns there.
         if state.frontend.shell_route != ShellRoute::MainMenu {
@@ -872,11 +874,7 @@ impl App {
         state: &mut AppState,
         pick: impl FnOnce(&crate::rules::ruleset::GeneralRules) -> Option<&str>,
     ) {
-        let sound = state
-            .rules()
-            .and_then(|rules| pick(&rules.general))
-            .map(str::to_owned);
-        Self::play_shell_ui_sound_by_id(state, sound.as_deref());
+        Self::play_shell_rules_sound(state, |rules| pick(&rules.general));
     }
 
     pub(crate) fn native_launcher_options_active(state: &AppState) -> bool {
@@ -1489,11 +1487,16 @@ impl App {
         }
     }
 
-    pub(crate) fn play_shell_ui_sound_by_id(state: &mut AppState, sound_id: Option<&str>) {
-        let Some(sound_id) = sound_id else {
-            return;
-        };
-        let (Some(sfx), Some(catalog)) = (
+    /// Plays a UI cue the active rules name: `sound` picks it from them where
+    /// it plays, so no caller copies the name. Nothing plays while the cue is
+    /// unset or there are no rules, no sound player or no audio catalog.
+    pub(crate) fn play_shell_rules_sound(
+        state: &mut AppState,
+        sound: impl for<'r> FnOnce(&'r crate::rules::ruleset::RuleSet) -> Option<&'r str>,
+    ) {
+        let rules = crate::app::state::active_rules(&state.frontend, &state.match_state);
+        let (Some(sound_id), Some(sfx), Some(catalog)) = (
+            rules.and_then(sound),
             &mut state.audio.sfx_player,
             state.process_assets.audio_catalog(),
         ) else {

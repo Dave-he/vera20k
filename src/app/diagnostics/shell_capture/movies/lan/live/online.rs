@@ -118,7 +118,7 @@ impl LiveRoundFlow {
             return true;
         }
         let host = self.online_config().host.clone();
-        let present = crate::app::shell_wol::lobby::member_names(state)
+        let present = crate::app::shell_wol::lobby::member_names(state.frontend.wol.as_ref())
             .any(|name| name.eq_ignore_ascii_case(&host));
         let (since, seen, left) =
             self.quick_match_wait
@@ -431,7 +431,8 @@ impl LiveRoundFlow {
                     .iter()
                     .position(|row| row.locale != 0)
                     .unwrap_or(0);
-                let (geometry, top) = persona::list_view(state).context("online location list")?;
+                let (geometry, top) = persona::list_view(&state.frontend.shell_controller)
+                    .context("online location list")?;
                 ensure!(
                     row >= top && row < top + geometry.visible_rows,
                     "online location choice is outside the visible list"
@@ -865,8 +866,9 @@ impl LiveRoundFlow {
             // matchbot's host, which must be the configured one. A second
             // pairing means the first room never started.
             RoundPhase::QuickMatch => {
-                let Some(room) = crate::app::shell_wol::lobby::current_channel(state)
-                    .filter(|channel| channel.kind == wol_lobby::GAME_CHANNEL)
+                let Some(room) =
+                    crate::app::shell_wol::lobby::current_channel(state.frontend.wol.as_ref())
+                        .filter(|channel| channel.kind == wol_lobby::GAME_CHANNEL)
                 else {
                     return Ok(());
                 };
@@ -964,6 +966,8 @@ impl LiveRoundFlow {
                         core.host() == (self.rounds.len() == 1)
                     };
                     if observe {
+                        use super::super::super::abort_return::AbortGoal;
+                        use crate::ui::shell::abort::AbortButton;
                         let solo_ai = self
                             .config
                             .as_ref()
@@ -979,19 +983,27 @@ impl LiveRoundFlow {
                                 state,
                                 &mut self.route,
                                 frame,
+                                AbortGoal::Choose(Some(AbortButton::Leave)),
+                                true,
                             )?
                         } else if quick_match {
                             // A Quick Match game is a tournament game: Abort
                             // opens the Surrender box instead of B6.
-                            super::super::super::abort_return::AbortReturnInput::begin_surrender(
+                            super::super::super::abort_return::AbortReturnInput::begin(
                                 state,
                                 &mut self.route,
                                 frame,
+                                AbortGoal::Surrender { press_ok: true },
                                 true,
                             )?
                         } else {
-                            super::super::super::abort_return::AbortReturnInput::begin_network_observe(
-                                state, &mut self.route, frame)?
+                            super::super::super::abort_return::AbortReturnInput::begin(
+                                state,
+                                &mut self.route,
+                                frame,
+                                AbortGoal::Choose(Some(AbortButton::Secondary)),
+                                false,
+                            )?
                         });
                         self.record(
                             frame,

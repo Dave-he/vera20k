@@ -33,7 +33,10 @@ impl App {
         let Some(layout) = Self::saved_game_layout(state, mode) else {
             return;
         };
-        let browser = Self::open_saved_game_rows(state, mode, saved_browser_rows(&layout), None);
+        let mut browser =
+            Self::open_saved_game_rows(state, mode, saved_browser_rows(&layout), None);
+        // The active-game browser shows its heading and prompt.
+        browser.statics = true;
         // The child replaces its hidden parent and owns all subsequent input.
         state.match_state.match_presentation.saved_game_browser = Some(browser);
         Self::enter_in_game_menu_state(state, InGameMenuState::SavedGame(mode));
@@ -283,12 +286,22 @@ impl App {
                 state.match_state.match_presentation.saved_game_browser = None;
                 Self::enter_in_game_menu_state(state, InGameMenuState::Closed);
             }
-            Err(error) => {
-                log::warn!("Load browser: {}: {error}", path.display());
-                let body = state.csf_label("TXT_ERROR_LOADING_GAME", "Error loading game.");
-                Self::show_saved_game_prompt(state, SavedSeedPromptPurpose::Error, body, false);
-            }
+            Err(error) => Self::report_saved_game_load_error(state, path, &error),
         }
+    }
+
+    pub(super) fn report_saved_game_load_error(
+        state: &mut AppState,
+        path: &std::path::Path,
+        error: &crate::app::persistence::PreparedLoadError,
+    ) {
+        log::warn!("Load Saved Game: {}: {error}", path.display());
+        let mut body = state.csf_label("TXT_ERROR_LOADING_GAME", "Error loading game.");
+        if let crate::app::persistence::PreparedLoadError::Resources(detail) = error {
+            body.push_str("\n\n");
+            body.push_str(detail);
+        }
+        Self::show_saved_game_prompt(state, SavedSeedPromptPurpose::Error, body, false);
     }
 
     pub(super) fn apply_saved_game_input(

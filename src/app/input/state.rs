@@ -324,7 +324,7 @@ pub(crate) struct MatchInputState {
     ///
     /// The chain's owner is [`MatchInputState::note_tactical_selection_release`];
     /// the resets go through [`MatchInputState::clear_tactical_selection_chain`].
-    last_selection_click: Option<(crate::util::time::Instant, i32, i32)>,
+    last_selection_click: Option<(vera20k_gui::UiMs, i32, i32)>,
     /// Types the local player builds endlessly (Ctrl + left click on a cameo).
     pub(crate) build_repeat: crate::app::input::build_repeat::BuildRepeat,
     /// The object the camera is following, i.e. `DisplayClass +0x11A0` behind
@@ -361,8 +361,8 @@ pub(crate) enum TacticalRelease {
         /// is off, or when a held T, a modifier or an armed attack-move
         /// claims the click.
         admitted: bool,
-        /// When the click landed.
-        now: crate::util::time::Instant,
+        /// When the click landed, on the shell's UI clock.
+        now: vera20k_gui::UiMs,
         /// The click point in physical window pixels, the space the host's
         /// double-click rectangle is measured in.
         point: (i32, i32),
@@ -558,6 +558,35 @@ impl MatchInputState {
         self.last_cursor_window = Some(point);
     }
 
+    /// The pointer in the pixels the current screen paints and hit-tests in:
+    /// the match frame's during a match (source pixels when zoomed), the
+    /// window's elsewhere.
+    pub(crate) fn cursor_position(&self) -> (f32, f32) {
+        (self.cursor_x, self.cursor_y)
+    }
+
+    /// The pointer in window pixels, where the status cards paint even over
+    /// a zoomed match; `zoom` is the match zoom in use.
+    pub(crate) fn window_cursor_position(&self, zoom: Option<ZoomGeometry>) -> (f32, f32) {
+        zoom.map_or((self.cursor_x, self.cursor_y), |zoom| {
+            zoom.source_to_window(self.cursor_x, self.cursor_y)
+        })
+    }
+
+    /// The building-placement section name while targeting places one.
+    pub(crate) fn armed_building_type(&self) -> Option<&str> {
+        self.targeting_mode
+            .as_ref()
+            .and_then(crate::app::types::TargetingMode::as_building_placement)
+    }
+
+    /// The super weapon section name while targeting fires one.
+    pub(crate) fn armed_super_weapon_type(&self) -> Option<&str> {
+        self.targeting_mode
+            .as_ref()
+            .and_then(crate::app::types::TargetingMode::as_super_weapon)
+    }
+
     /// The OS pointer's last position in window pixels, while one is known.
     pub(crate) fn pointer_in_window(&self) -> Option<(f32, f32)> {
         self.last_cursor_window
@@ -620,12 +649,13 @@ impl MatchInputState {
                     self.last_selection_click = None;
                     return false;
                 }
+                let (time, width, height) = crate::ui::shell::controller::host_double_click_limits();
                 vera20k_gui::shell::list::is_double_click(
                     &mut self.last_selection_click,
                     now,
                     point.0,
                     point.1,
-                    crate::ui::shell::controller::host_double_click_limits(),
+                    (time.as_millis() as u64, width, height),
                 )
             }
             // A band box is a drag, not a click: it never joins the chain,
@@ -910,7 +940,7 @@ impl MatchInputState {
     /// the active cursor, even if OutList is full.
     pub(crate) fn submit_building_placement(
         &mut self,
-        sidebar: &mut crate::app::sidebar_projection::SidebarProjectionState,
+        sidebar: &mut crate::app::sidebar_projection::SidebarModel,
     ) {
         if let Some(crate::app::types::TargetingMode::BuildingPlacement(target)) =
             &self.targeting_mode
@@ -1212,7 +1242,7 @@ mod double_click_tests {
     fn click(
         input: &mut MatchInputState,
         admitted: bool,
-        now: crate::util::time::Instant,
+        now: vera20k_gui::UiMs,
         point: (i32, i32),
     ) -> bool {
         input.note_tactical_selection_release(TacticalRelease::Click {
@@ -1230,9 +1260,9 @@ mod double_click_tests {
     #[test]
     fn right_click_orders_double_click_pairs_quick_same_spot_selection_clicks_only() {
         let mut input = MatchInputState::new(Default::default());
-        let start = crate::util::time::Instant::now();
+        let start: vera20k_gui::UiMs = 1_000;
         let point = (120, 80);
-        let shortly = |millis| start + crate::util::time::Duration::from_millis(millis);
+        let shortly = |millis| start + millis;
         assert!(!click(&mut input, false, start, point));
         assert!(!click(&mut input, false, shortly(5), point));
         assert!(!click(&mut input, true, start, point));
@@ -1249,9 +1279,9 @@ mod double_click_tests {
     #[test]
     fn a_band_box_drag_never_joins_the_click_chain() {
         let mut input = MatchInputState::new(Default::default());
-        let start = crate::util::time::Instant::now();
+        let start: vera20k_gui::UiMs = 1_000;
         let point = (120, 80);
-        let shortly = |millis| start + crate::util::time::Duration::from_millis(millis);
+        let shortly = |millis| start + millis;
         // A plain click opens the chain.
         assert!(!click(&mut input, true, start, point));
         // The drag joins no chain and discards the open one. The empty box

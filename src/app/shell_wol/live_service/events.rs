@@ -94,7 +94,7 @@ fn admit_room_setup(
     let host = state.match_state.session.host();
     // VERA: Quick Match plays the original game, whatever rules its host
     // sends.
-    if !host && super::lobby::quick_match_runner(state) {
+    if !host && super::lobby::quick_match_runner(state.frontend.wol.as_ref()) {
         options.launch.options.host_rules = Default::default();
     }
     let events = if host {
@@ -129,7 +129,11 @@ fn admit_room_setup(
     // The owner is ready without a guest Accept button, but still proves its
     // own local map and rules to the same server admission gate.
     let agreement = local_agreement(state, revision)?;
-    let status = local_map_status(state, room);
+    let status = local_map_status(
+        &state.match_state.session,
+        state.frontend.wol.as_ref(),
+        room,
+    );
     Ok(OptionsAdmission {
         agreement,
         status,
@@ -226,7 +230,7 @@ pub(super) fn apply_event(
                 .context("missing watch match")?
                 .to_owned();
             relay_uuid(&id)?;
-            let awaited = super::lobby::awaits_watch(state, &id);
+            let awaited = super::lobby::awaits_watch(state.frontend.wol.as_ref(), &id);
             if let Err(error) = service.receive_watch_start(&id, awaited, || {
                 let start = prepare_watch(state, decode(payload)?)?;
                 if let Some(lobby) = state
@@ -726,7 +730,7 @@ pub(super) fn apply_event(
                 // This game already failed the start and left the room: only
                 // the lobby's names are new.
                 if let Some(names) = names {
-                    crate::app::shell_wol::add_problem_line(state, names);
+                    crate::app::shell_wol::add_problem_line(state.frontend.wol.as_mut(), names);
                 }
                 return Ok(());
             }

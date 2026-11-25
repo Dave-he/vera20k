@@ -206,7 +206,7 @@ pub(crate) fn key(state: &mut AppState, event: &KeyEvent) {
 /// over it.
 fn room_takes_keys(state: &AppState) -> bool {
     crate::app::shell_network_setup::verify(state).is_none()
-        && !crate::app::shell_wol::page::open(state)
+        && !crate::app::shell_wol::page::open(state.frontend.wol.as_ref())
         && !notice_active(state)
         && crate::app::shell_network_setup::view(state).is_some()
 }
@@ -251,7 +251,7 @@ pub(crate) fn key_press(state: &mut AppState, code: Option<KeyCode>, text: Optio
         return;
     }
     // The page dialog 0xCF runs its own modal loop over C2/C9.
-    if crate::app::shell_wol::page::open(state) {
+    if crate::app::shell_wol::page::open(state.frontend.wol.as_ref()) {
         crate::app::shell_wol::page::key_press(state, code, text);
         return;
     }
@@ -442,22 +442,27 @@ fn handle_events(state: &mut AppState, view: &SetupView) {
 }
 
 /// The status help of the control under the pointer at `x`, `y`.
-fn hovered_help(state: &AppState, view: &SetupView, layout: &MultiplayerSetupLayout) -> String {
+fn hovered_help(state: &AppState, view: &SetupView) -> String {
     let (x, y) = state.match_state.input.cursor_px();
     let controller = &state.frontend.shell_controller;
-    let over = controller
+    let gui = controller.gui();
+    let hit = controller
         .top_id()
         .and_then(|top| controller.root_in(top))
-        .and_then(|root| control_at(controller.gui(), root, x, y, false));
-    // `0x468` is no control the room's hit test finds; VERA's enlarged preview
-    // gives the box its thumbnail help and the hint.
-    let over_preview =
-        over.is_none() && layout.map_preview.contains(x, y) && preview_box_shows(state, view);
+        .and_then(|root| gui.hit_at(root, x, y, false))
+        .and_then(|node| u16::try_from(gui.id_of(node)?).ok());
+    // `0x468` is no control a press finds (it shows only while it holds a
+    // picture); VERA's enlarged preview gives the box its thumbnail help
+    // and the hint.
+    let over_preview = hit == Some(MAP_PREVIEW);
     // VERA's online room names the badge, rank and OS of the player whose
-    // name or painted badge (no control) is under the pointer.
-    let badge = (controller.top_id() == Some(view.page().dialog))
-        .then(|| layout.badge_at(view, x, y))
-        .flatten();
+    // name or badge is under the pointer.
+    let badge = hit
+        .and_then(|id| painted_row(id, BADGE))
+        .map(|row| SetupColumn::Player.control(row));
+    let over = hit.filter(|id| {
+        !matches!(*id, MAP_PREVIEW | ROSTER_AREA) && painted_row(*id, BADGE).is_none()
+    });
     let player = badge
         .or(over)
         .and_then(|id| crate::app::shell_network_setup::view::player_help(state, view, id));
@@ -487,11 +492,11 @@ pub(crate) fn cursor_moved(state: &mut AppState) {
         crate::app::shell_network_setup::verify_pointer(state, None);
         return;
     }
-    if crate::app::shell_wol::page::open(state) {
+    if crate::app::shell_wol::page::open(state.frontend.wol.as_ref()) {
         crate::app::shell_wol::page::cursor_moved(state);
         return;
     }
-    let Some((view, layout)) = synced(state, true) else {
+    let Some((view, _)) = synced(state, true) else {
         return;
     };
     let (x, y) = state.match_state.input.cursor_px();
@@ -499,7 +504,7 @@ pub(crate) fn cursor_moved(state: &mut AppState) {
     let held = slider_held(state) || notice_active(state);
     state.frontend.shell_controller.on_pointer_move(x, y);
     if !held {
-        let help = hovered_help(state, &view, &layout);
+        let help = hovered_help(state, &view);
         let Some(ui) = state.frontend.multiplayer_setup.as_mut() else {
             return;
         };
@@ -516,7 +521,7 @@ pub(crate) fn mouse(state: &mut AppState, button: MouseButton, pressed: bool) {
         crate::app::shell_network_setup::verify_pointer(state, Some(pressed));
         return;
     }
-    if crate::app::shell_wol::page::open(state) {
+    if crate::app::shell_wol::page::open(state.frontend.wol.as_ref()) {
         crate::app::shell_wol::page::mouse(state, pressed);
         return;
     }
@@ -578,7 +583,7 @@ pub(crate) fn wheel(state: &mut AppState, lines: f32) -> bool {
     if lines == 0.0
         || notice_active(state)
         || crate::app::shell_network_setup::verify(state).is_some()
-        || crate::app::shell_wol::page::open(state)
+        || crate::app::shell_wol::page::open(state.frontend.wol.as_ref())
     {
         return false;
     }

@@ -116,7 +116,7 @@ impl App {
     /// gamemd's capture-changed case drops the button-held byte and tears the
     /// band rectangle down; without this the right-drag pan keeps applying its
     /// anchor-relative step every frame and edge scroll stays inhibited until
-    /// the player right-clicks again. The gadget substrate keeps its own
+    /// the player right-clicks again. The match's chrome keeps its own
     /// sticky capture and must die on the same edge, or the next click is still
     /// routed to the region that captured it (the release that would free it
     /// was lost).
@@ -133,11 +133,7 @@ impl App {
         // inhibit, so it dies on the same edge as the rest of the pointer
         // state.
         state.match_state.input.touch_mapper.reset();
-        state
-            .match_state
-            .match_presentation
-            .in_game_gadgets
-            .cancel_pointer_capture();
+        crate::app::input::chrome_input::cancel(state);
         let presentation = &mut state.match_state.match_presentation;
         presentation.dialog_ui.gui_mut().cancel_pointer();
         presentation.diplomacy_page = Default::default();
@@ -2041,7 +2037,7 @@ impl ApplicationHandler for App {
             // box tells them of a mod, and they never check for an update.
             let live_polls: &[Poll] = &[
                 crate::app::map_library::poll,
-                crate::app::shell_wol::login_info::poll,
+                |state| crate::app::shell_wol::login_info::poll(&mut state.frontend),
                 crate::app::map_picture::poll,
                 crate::app::mods::poll,
                 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]

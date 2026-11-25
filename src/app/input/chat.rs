@@ -546,11 +546,7 @@ fn skirmish_command(state: &mut AppState, line: &str) -> Result<String, &'static
             );
             // A button held while typing cannot confirm the new order.
             state.match_state.input.cancel_tactical_drag();
-            state
-                .match_state
-                .match_presentation
-                .in_game_gadgets
-                .cancel_pointer_capture();
+            crate::app::input::chrome_input::cancel(state);
             state.match_state.input.skirmish_spawn = Some(order);
             Ok(prompt)
         }
@@ -839,13 +835,11 @@ fn route_houses(
 pub(crate) fn receive_packet(state: &mut AppState, name: &str, color: i32, text: &str) {
     let rgb = crate::app::input::messages::packet_player_line_rgb(state, color);
     crate::app::input::messages::post_chat_line(state, name, text, rgb);
-    let sound = state
-        .rules()
-        .and_then(|rules| rules.general.incoming_message_sound().map(str::to_owned));
-    crate::app::App::play_shell_ui_sound_by_id(state, sound.as_deref());
+    crate::app::App::play_shell_rules_sound(state, |rules| rules.general.incoming_message_sound());
     let units: Vec<u16> = text.encode_utf16().collect();
     crate::app::shell_wol::translation::received(
-        state,
+        state.frontend.wol.as_mut(),
+        &state.persistence.options_profile,
         &units,
         false,
         crate::app::shell_wol::translation::TranslatedLine::Match {

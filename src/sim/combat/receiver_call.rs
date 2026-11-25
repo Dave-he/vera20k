@@ -738,7 +738,7 @@ pub(super) fn receiver_anger_delta(final_damage: i32, strength: i32, cost: i32) 
 /// @ 0x007C5F00` into the integer indefinite, whose low dword is zero. The
 /// reader that owns `DelayKillAtMax` refuses a non-finite value
 /// (`rules::warhead_type::refused_delay_kill_at_max`), so this path never
-/// sees the ±inf the native field keeps.
+/// sees the +/-inf the native field keeps.
 fn postmortem_delay_duration(warhead: &WarheadType, distance_leptons: i32) -> i32 {
     use crate::util::native_x87::MaskedX87Chop53 as X87;
     let base = X87::load_i32(warhead.delay_kill_frames);

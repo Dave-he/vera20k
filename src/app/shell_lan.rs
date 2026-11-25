@@ -455,7 +455,9 @@ pub(crate) fn append_chat(state: &mut AppState, line: LanChatLine) {
 pub(crate) fn append_chat_sent_at(state: &mut AppState, line: LanChatLine, sent_at: Option<u64>) {
     let route = state.frontend.shell_route;
     // WOL Quick Match's 0x117 is the top dialog with a 0x53F.
-    if route == ShellRoute::Wol && crate::app::shell_wol::quick_match::page_open(state) {
+    if route == ShellRoute::Wol
+        && crate::app::shell_wol::quick_match::page_open(state.frontend.wol.as_ref())
+    {
         crate::app::shell_wol::quick_match::append_line(state, line);
         return;
     }
@@ -482,7 +484,7 @@ pub(crate) fn append_room_chat_sent_at(
     line: LanChatLine,
     sent_at: Option<u64>,
 ) {
-    if crate::app::shell_wol::lobby::visiting(state) {
+    if crate::app::shell_wol::lobby::visiting(state.frontend.wol.as_ref()) {
         append_chat_to(state, true, false, line, sent_at);
     } else {
         append_chat_sent_at(state, line, sent_at);
@@ -588,11 +590,7 @@ pub(crate) fn report_error(state: &mut AppState, key: &str) {
             color: u32::MAX,
         },
     );
-    let sound = state
-        .rules()
-        .and_then(|rules| rules.general.system_error_sound())
-        .map(str::to_owned);
-    App::play_shell_ui_sound_by_id(state, sound.as_deref());
+    App::play_shell_rules_sound(state, |rules| rules.general.system_error_sound());
 }
 
 pub(crate) fn dispatch(state: &mut AppState, action: LanLobbyAction) {
@@ -876,20 +874,19 @@ fn discovery_notice(state: &mut AppState, name: &str, open: bool, new_record: bo
         &state.csf_label(key, key),
         &[crate::assets::csf_file::CsfArg::Str(name)],
     );
-    let sound = state
-        .rules()
-        .and_then(|rules| {
+    let play = |state: &mut AppState| {
+        App::play_shell_rules_sound(state, |rules| {
             if open {
                 rules.general.game_forming_sound()
             } else {
                 rules.general.game_closed_sound()
             }
-        })
-        .map(str::to_owned);
+        });
+    };
     // Existing-row transitions play5E030A before chat5E031E; new open ads
     // append5E04C1 before playing5E04E0. Both run only in membership0/1 (BB).
     if !new_record {
-        App::play_shell_ui_sound_by_id(state, sound.as_deref());
+        play(state);
     }
     append_chat(
         state,
@@ -899,7 +896,7 @@ fn discovery_notice(state: &mut AppState, name: &str, open: bool, new_record: bo
         },
     );
     if new_record {
-        App::play_shell_ui_sound_by_id(state, sound.as_deref());
+        play(state);
     }
 }
 
@@ -1058,7 +1055,7 @@ pub(crate) fn sync_gui(state: &mut AppState) {
         controller.focus_control(PAGE.dialog, Some(CHAT));
     }
     let gui = controller.gui_mut();
-    page::sync_rects(gui, root, |id| layout.rect(id));
+    page::sync_rects(gui, root, |id| layout.widget_rect(id));
     let lobby = &mut runtime.lobby;
     let _ = gui.set(root, Prop::Enabled, Value::Bool(lobby.enabled));
     // The observer image `0x75F` toggles like its box, anywhere on it.

@@ -140,7 +140,7 @@ fn hold_chat_line(state: &mut AppState) {
         Some(csf.get(key)?.to_string())
     });
     if let Some(line) = line {
-        crate::app::shell_wol::hold_problem_line(state, line);
+        crate::app::shell_wol::hold_problem_line(state.frontend.wol.as_mut(), line);
     }
 }
 
@@ -154,10 +154,33 @@ pub(crate) fn hold_quit_line(state: &mut AppState) {
         .is_some_and(|counters| !counters.started);
     if online(state) && never_started {
         crate::app::shell_wol::hold_problem_line(
-            state,
+            state.frontend.wol.as_mut(),
             crate::i18n::tr("VERA:MatchStartCancelled"),
         );
     }
+}
+
+/// The box's widgets: OK, its default and cancel button.
+fn nodes() -> NodeSpec {
+    NodeSpec::new(NodeKind::Dialog).child(
+        NodeSpec::new(NodeKind::Button)
+            .id(control::OK.into())
+            .with(Prop::Default, Value::Bool(true))
+            .with(Prop::Cancel, Value::Bool(true)),
+    )
+}
+
+/// `shell_box` on `parts` in the widgets its input routes to, before it
+/// paints ([`crate::ui::shell::modal::ShellBox::sync`]).
+pub(crate) fn sync_box(
+    state: &mut AppState,
+    shell_box: &crate::ui::shell::modal::ShellBox,
+    parts: &crate::ui::shell::modal::BoxParts,
+) {
+    let controller = &mut state.frontend.shell_controller;
+    let rect = |id| (id == control::OK).then(|| parts.button(0));
+    let sync = |gui: &mut vera20k_gui::Gui, root| shell_box.sync(gui, root, parts);
+    dialog_page::sync_dialog(controller, DIALOG, nodes, rect, sync);
 }
 
 #[derive(Debug, Default)]
@@ -176,14 +199,6 @@ impl NetworkFailureModal {
         event: InputEvent,
         ok: RectPx,
     ) -> Vec<PageEvent> {
-        let nodes = || {
-            NodeSpec::new(NodeKind::Dialog).child(
-                NodeSpec::new(NodeKind::Button)
-                    .id(control::OK.into())
-                    .with(Prop::Default, Value::Bool(true))
-                    .with(Prop::Cancel, Value::Bool(true)),
-            )
-        };
         let rect = |id| (id == control::OK).then_some(ok);
         let events =
             dialog_page::route(controller, DIALOG, nodes, rect, dialog_page::no_sync, event);
@@ -224,11 +239,7 @@ pub(crate) fn show(state: &mut AppState) {
         state.match_state.network_failure = Some(NetworkFailureModal::default());
         state.match_state.input.cancel_tactical_drag();
         state.match_state.input.keys_held.clear();
-        state
-            .match_state
-            .match_presentation
-            .in_game_gadgets
-            .cancel_pointer_capture();
+        crate::app::input::chrome_input::cancel(state);
     }
     state.frontend.shell_controller.ensure_active(DIALOG);
     state.platform.window.request_redraw();

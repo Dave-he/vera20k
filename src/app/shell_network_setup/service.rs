@@ -102,7 +102,7 @@ pub(crate) fn service_event(state: &mut AppState, event: NetworkSetupEvent) -> a
     // a lobby visitor's room goes on hidden behind the lobby page.
     anyhow::ensure!(
         (state.frontend.shell_route == ShellRoute::NetworkSetup
-            || crate::app::shell_wol::lobby::visiting(state)
+            || crate::app::shell_wol::lobby::visiting(state.frontend.wol.as_ref())
             || super::quick_match(state)
             || super::external(state))
             && state.frontend.network_setup_protocol.is_some(),
@@ -165,11 +165,7 @@ pub(crate) fn service_event(state: &mut AppState, event: NetworkSetupEvent) -> a
             super::wol::clear_guest_acceptance(state)?;
             // Sink vt+0x28 plays [AudioVisual] PlayerJoined (0x750920) for a
             // remote game-channel join.
-            let sound = state
-                .rules()
-                .and_then(|rules| rules.general.player_joined_sound())
-                .map(str::to_owned);
-            App::play_shell_ui_sound_by_id(state, sound.as_deref());
+            App::play_shell_rules_sound(state, |rules| rules.general.player_joined_sound());
             if dialog.host {
                 // VERA: the host may wait in another window, which hears no
                 // sound (the activation edge stops the primary output).
@@ -180,7 +176,8 @@ pub(crate) fn service_event(state: &mut AppState, event: NetworkSetupEvent) -> a
                 // 0x007A6DC2..0x007A6E50: modes 1/2 parse the matchbot's
                 // Start payload [0xB73714] (0x5E3D10) and select its
                 // scenario.
-                match crate::app::shell_wol::quick_match::start_options(state) {
+                match crate::app::shell_wol::quick_match::start_options(state.frontend.wol.as_ref())
+                {
                     Some(options) => service_event(state, NetworkSetupEvent::HostSetup(options))?,
                     None => log::warn!("WOL Quick Match host has no matchbot options"),
                 }
@@ -226,11 +223,7 @@ pub(crate) fn service_event(state: &mut AppState, event: NetworkSetupEvent) -> a
             // Type3 admission5E0770 and accepted host type6 at5E1B32.
             // This adapter is the admitted setup (membership>=2); repeated
             // discovery packets never manufacture another participant/cue.
-            let sound = state
-                .rules()
-                .and_then(|rules| rules.general.player_joined_sound())
-                .map(str::to_owned);
-            App::play_shell_ui_sound_by_id(state, sound.as_deref());
+            App::play_shell_rules_sound(state, |rules| rules.general.player_joined_sound());
             if dialog.host {
                 // VERA: as in a WOL room, the host may be in another window.
                 state.platform.request_attention(false);
@@ -284,11 +277,7 @@ pub(crate) fn service_event(state: &mut AppState, event: NetworkSetupEvent) -> a
             // admitted setup (state2), not a participant-count predicate.
             // Host disappearance has already cleared native membership and
             // uses the separate silent HostLeft return below.
-            let sound = state
-                .rules()
-                .and_then(|rules| rules.general.player_left_sound())
-                .map(str::to_owned);
-            App::play_shell_ui_sound_by_id(state, sound.as_deref());
+            App::play_shell_rules_sound(state, |rules| rules.general.player_left_sound());
             super::cooperative::guest_left(state)?;
         }
         NetworkSetupEvent::PlayerChoices {
@@ -381,7 +370,9 @@ pub(crate) fn service_event(state: &mut AppState, event: NetworkSetupEvent) -> a
             }
         }
         NetworkSetupEvent::CampaignHostSetup { options, room } => {
-            if super::start_phase(state).submitted() || crate::app::shell_wol::in_match(state) {
+            if super::start_phase(state).submitted()
+                || crate::app::shell_wol::in_match(state.frontend.wol.as_ref())
+            {
                 return Ok(());
             }
             anyhow::ensure!(
@@ -421,7 +412,8 @@ pub(crate) fn service_event(state: &mut AppState, event: NetworkSetupEvent) -> a
             // 0x5E3E73..0x5E3E90: a WOL parse drops every option text while
             // the game runs ([0xB77DC1]) or a StartGame is pending ([0xB77E28]).
             if dialog.wol()
-                && (crate::app::shell_wol::in_match(state) || super::start_phase(state).submitted())
+                && (crate::app::shell_wol::in_match(state.frontend.wol.as_ref())
+                    || super::start_phase(state).submitted())
             {
                 return Ok(());
             }
@@ -713,7 +705,8 @@ pub(crate) fn service_event(state: &mut AppState, event: NetworkSetupEvent) -> a
             // The 'C' arm (0x005E43CE) follows the parse's WOL drop of every
             // option text (0x005E3E73..0x005E3E90), as HostSetup does.
             if dialog.wol()
-                && (crate::app::shell_wol::in_match(state) || super::start_phase(state).submitted())
+                && (crate::app::shell_wol::in_match(state.frontend.wol.as_ref())
+                    || super::start_phase(state).submitted())
             {
                 return Ok(());
             }

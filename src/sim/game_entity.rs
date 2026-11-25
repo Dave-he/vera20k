@@ -983,6 +983,24 @@ pub struct Seldom {
     /// [`UnloadKeep`]: crate::sim::transport_unload::UnloadKeep
     #[serde(default)]
     pub(crate) transport_unload_keep_count: crate::sim::transport_unload::UnloadKeep,
+    /// Tiberian Sun's limpets (Firestorm TechnoClass+0x214/+0x218), a
+    /// [`Limpets`] that `sim::limpet` owns. Nothing unless a `LimpetFactor=`
+    /// warhead hit the object; [`FootSpeedState::limpeted`] spares the speed
+    /// query this read otherwise.
+    ///
+    /// [`Limpets`]: crate::sim::limpet::Limpets
+    /// [`FootSpeedState::limpeted`]: crate::sim::components::FootSpeedState::limpeted
+    #[serde(default)]
+    pub(crate) limpets: crate::sim::limpet::Limpets,
+    /// Tiberian Sun's web timer (Firestorm InfantryClass+0x370), a
+    /// [`WebTimer`] that `sim::infantry` owns. Nothing unless a `Webby=`
+    /// warhead webbed the man; a byte in his [`InfantryRuntime`] spares
+    /// every other object this read.
+    ///
+    /// [`WebTimer`]: crate::sim::infantry::WebTimer
+    /// [`InfantryRuntime`]: crate::sim::infantry::InfantryRuntime
+    #[serde(default)]
+    pub(crate) web: crate::sim::infantry::WebTimer,
     /// The Ares 3.0 TechnoExt and BuildingExt state, an [`AresPart`] kept out
     /// of line and only once Ares code writes it.
     #[serde(default)]
@@ -2551,6 +2569,8 @@ impl GameEntity {
                 railgun_particle_system: Default::default(),
                 damage_smoke_system_id: Default::default(),
                 transport_unload_keep_count: Default::default(),
+                limpets: Default::default(),
+                web: Default::default(),
                 #[cfg(feature = "phobos")]
                 shield: None,
             }),
