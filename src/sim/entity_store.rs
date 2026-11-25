@@ -488,6 +488,9 @@ impl ClassRegistry {
                     self.chunks.push(VecDeque::from([id]));
                 } else if let Some(last) = self.chunks.last_mut() {
                     last.push_back(id);
+                } else {
+                    // An empty registry: the id opens the first chunk.
+                    self.chunks.push(VecDeque::from([id]));
                 }
             }
             chunk => {
