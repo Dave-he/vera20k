@@ -28,6 +28,14 @@ path = "bin/sim-bench.rs"
 
 # The saved-game layout id the browser build compiles in (tools/wasm/build.py).
 [[bin]]
+name = "ai-eval"
+path = "bin/ai-eval.rs"
+
+[[bin]]
+name = "ai-train"
+path = "bin/ai-train.rs"
+
+[[bin]]
 name = "snapshot-layout"
 path = "bin/snapshot-layout.rs"
 

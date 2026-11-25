@@ -4870,6 +4870,11 @@ pub struct RuleSet {
     /// Empty for every rules set without that section — which is all retail
     /// data — and an empty catalog is what keeps the feature entirely inert.
     personalities: crate::rules::personality::PersonalityCatalog,
+    /// VERA's own computer-player policy (`[VeraAI]`).
+    ///
+    /// Disabled for every rules set without that section, which is all retail
+    /// data, so a stock game keeps the native computer player.
+    vera_ai: crate::rules::vera_ai::VeraAiPolicy,
     /// `[CommanderFeedback]`: the talking-head layer's own switches, next to
     /// the personalities they govern.
     commander_feedback: crate::rules::personality::CommanderFeedbackRules,
@@ -7351,6 +7356,9 @@ impl RuleSet {
             country_indices: country_side_registry.country_indices,
             side_ids: country_side_registry.side_ids,
             personalities,
+            vera_ai: crate::rules::vera_ai::VeraAiPolicy::from_ini(ini.section_or_empty(
+                crate::rules::vera_ai::SECTION,
+            )),
             commander_feedback: crate::rules::personality::parse_commander_feedback(ini),
             end_game_screens: crate::rules::end_game::parse_end_game_screens(
                 ini,
@@ -10731,6 +10739,23 @@ impl RuleSet {
     /// Commander personalities from `[AIPersonalities]`. Empty for retail data.
     pub fn personalities(&self) -> &crate::rules::personality::PersonalityCatalog {
         &self.personalities
+    }
+
+    /// VERA's own computer-player policy (`[VeraAI]`).
+    ///
+    /// A rules set without the section holds the disabled policy, so a stock
+    /// game keeps the native computer player.
+    pub fn vera_ai(&self) -> &crate::rules::vera_ai::VeraAiPolicy {
+        &self.vera_ai
+    }
+
+    /// Replace VERA's own computer-player policy.
+    ///
+    /// A game reads the policy from its rules and never changes it. The
+    /// headless trainer holds a set of numbers it wants to try and puts them
+    /// here, after the load and before the match starts.
+    pub fn set_vera_ai(&mut self, policy: crate::rules::vera_ai::VeraAiPolicy) {
+        self.vera_ai = policy;
     }
 
     /// `[CommanderFeedback]`: whether the talking-head layer runs at all, and
