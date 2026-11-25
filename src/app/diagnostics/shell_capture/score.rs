@@ -211,7 +211,7 @@ impl CampaignScoreCapture {
             "campaign capture did not render the production score page"
         );
         ensure!(
-            App::campaign_score_shell_active(state),
+            App::campaign_score_shell_active(&state.frontend),
             "campaign score capture left the 0x103 page"
         );
         let page = state
@@ -274,7 +274,8 @@ impl CampaignScoreCapture {
             | CampaignAnimationPhase::WaitingForFirstSample
             | CampaignAnimationPhase::WaitingForNextFrame => {
                 ensure!(
-                    rendered == PresentedShell::Score && App::campaign_score_shell_active(state),
+                    rendered == PresentedShell::Score
+                        && App::campaign_score_shell_active(&state.frontend),
                     "campaign animation sequence left the production 0x103 page"
                 );
                 if animation.phase == CampaignAnimationPhase::WaitingForFirstFrame
@@ -294,13 +295,14 @@ impl CampaignScoreCapture {
             }
             CampaignAnimationPhase::Continue => {
                 ensure!(
-                    rendered == PresentedShell::Score && App::campaign_score_shell_active(state),
+                    rendered == PresentedShell::Score
+                        && App::campaign_score_shell_active(&state.frontend),
                     "campaign Continue probe did not start on dialog 0x103"
                 );
                 click_campaign_continue(state)?;
                 ensure!(
                     crate::app::frontend::shell_transition::shell_exit_wave(
-                        state,
+                        &state.frontend.shell_exit,
                         crate::app::frontend::shell_transition::ShellSlideKind::CampaignScore,
                     )
                     .is_some(),
@@ -348,7 +350,8 @@ impl CampaignScoreCapture {
             }
             CampaignAnimationPhase::WaitingForReopenedFrame => {
                 ensure!(
-                    rendered == PresentedShell::Score && App::campaign_score_shell_active(state),
+                    rendered == PresentedShell::Score
+                        && App::campaign_score_shell_active(&state.frontend),
                     "campaign animation reopen did not render dialog 0x103"
                 );
             }
@@ -391,7 +394,7 @@ impl CampaignScoreCapture {
             _ => return Ok(false),
         };
         ensure!(
-            rendered == PresentedShell::Score && App::campaign_score_shell_active(state),
+            rendered == PresentedShell::Score && App::campaign_score_shell_active(&state.frontend),
             "campaign animation sample was requested outside rendered dialog 0x103"
         );
         let Some(emblem_frame) = state
@@ -451,7 +454,7 @@ impl CampaignScoreCapture {
             .take()
             .context("campaign animation readback has no post-render snapshot")?;
         ensure!(
-            App::campaign_score_shell_active(state),
+            App::campaign_score_shell_active(&state.frontend),
             "campaign score page closed before its sample readback completed"
         );
         let roi_pixels = crop_bgra_roi(pixels, width, height, pending.roi)?;
@@ -608,7 +611,7 @@ impl CampaignScoreCapture {
             return Ok(false);
         }
         ensure!(
-            App::campaign_score_shell_active(state),
+            App::campaign_score_shell_active(&state.frontend),
             "campaign score capture left the 0x103 page"
         );
         ensure!(
@@ -659,8 +662,9 @@ impl CampaignScoreCapture {
 }
 
 fn campaign_score_layout(state: &AppState) -> CampaignScoreLayout {
-    let (width, height) = crate::app::frontend::shell_layout::shell_screen_size(state);
-    let fills_window = crate::app::frontend::shell_layout::fills_window(state);
+    let (width, height) =
+        crate::app::frontend::shell_layout::shell_screen_size(&state.renderer.gpu);
+    let fills_window = crate::app::frontend::shell_layout::fills_window(&state.renderer.gpu);
     state.frontend.campaign_score_page.as_ref().map_or_else(
         || CampaignScoreLayout::compute(Default::default(), width, height, 0),
         |page| page.layout(width, height, fills_window),
@@ -689,7 +693,7 @@ pub(super) fn click_campaign_continue(state: &mut AppState) -> Result<()> {
     App::handle_campaign_score_mouse(state, Some(false));
     ensure!(
         crate::app::frontend::shell_transition::shell_exit_wave(
-            state,
+            &state.frontend.shell_exit,
             crate::app::frontend::shell_transition::ShellSlideKind::CampaignScore,
         )
         .is_some(),
@@ -823,7 +827,7 @@ impl ScoreCapture {
             return Ok(());
         }
         ensure!(
-            App::score_shell_active(state),
+            App::score_shell_active(&state.frontend),
             "score capture left the score page"
         );
         let entry_tick = state
@@ -864,7 +868,7 @@ impl ScoreCapture {
                     Self::set_pointer(state, (EXPECTED_CURSOR_X as i32, EXPECTED_CURSOR_Y as i32));
                     ensure!(
                         crate::app::frontend::shell_transition::shell_exit_wave(
-                            state,
+                            &state.frontend.shell_exit,
                             ShellSlideKind::Score
                         )
                         .is_some(),
@@ -894,14 +898,16 @@ impl ScoreCapture {
                     bail!("only the slide-out target leaves the page");
                 };
                 let tick = crate::app::frontend::shell_transition::shell_exit_wave(
-                    state,
+                    &state.frontend.shell_exit,
                     ShellSlideKind::Score,
                 )
                 .map(|wave| wave.tick())
                 .context("the 0x108 teardown slide ended before its held tick")?;
                 ensure!(tick <= target, "teardown slide passed tick {target}");
                 if tick == target {
-                    crate::app::frontend::shell_transition::hold_shell_exit_for_capture(state);
+                    crate::app::frontend::shell_transition::hold_shell_exit_for_capture(
+                        &mut state.frontend.shell_exit,
+                    );
                     self.route.push(json!({"dialog": 0x108, "frame": frame,
                         "action": "hold teardown slide", "tick": tick}));
                     self.phase = Phase::Settling(SETTLE_FRAMES);
@@ -920,7 +926,7 @@ impl ScoreCapture {
             return Ok(false);
         }
         ensure!(
-            App::score_shell_active(state),
+            App::score_shell_active(&state.frontend),
             "score capture left the score page"
         );
         Ok(match self.target {

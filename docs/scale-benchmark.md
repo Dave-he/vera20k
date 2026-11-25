@@ -114,5 +114,27 @@ four-thread tick and the client frame each at most half their baseline.
 Where the engine differs from gamemd to reach these numbers, the difference is
 recorded beside its code as a sim-scale deviation (AGENTS.md) and listed here.
 
-None yet: the changes made so far for this benchmark leave every result as
-it was.
+- **Path searches in jams**
+  ([path_batch.rs](../src/sim/movement/path_batch.rs)). When eight or more
+  blocked units ask in one frame for a way round every moving friendly, a
+  search stops at 4,096 expansions, where the original searches on, and its
+  unit waits BlockagePathDelay frames again, as a newly blocked unit does,
+  looking for a way through the traffic meanwhile. Blocked units' searches
+  also get a smaller budget each frame: 16,384 expansions for the ways round
+  and 32,768 for the ways through, instead of 65,527 each. In the battle's
+  busiest part this halves a frame's search work, and jammed units find
+  their way a little later.
+- **Patrol scans spread over their period**
+  ([actions.rs](../src/sim/team_script_vm/actions.rs),
+  `team_action_patrol_waypoint`). A patrolling team's leader looks for a
+  target once every `[AI] PatrolScan=` (14 frames with the retail rules), as
+  in the original, but each team on its own frame of that period, its id
+  modulo the period, where the original has every team look on the same
+  frame. A team so turns on a threat up to 13 frames sooner or later.
+- **Patrol scans answered side by side**
+  ([scan_batch.rs](../src/sim/world/techno_ai/scan_batch.rs)). The scans of
+  the leaders due in a frame are made side by side as the team step begins,
+  against the world as it stood then, and a leader's scan takes its answer
+  while the leader and the answer's target stand as the scan saw them. What
+  an earlier team's update in the same step changes, such as an order to its
+  members, a leader's scan sees a period later.

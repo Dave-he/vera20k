@@ -51,7 +51,7 @@ pub(crate) fn reset_scenario_exit_runtime(state: &mut AppState) {
         .outcome_banner_presentation = Default::default();
     state.match_state.network_failure = None;
     state.match_state.frame_stopped = false;
-    crate::app::lan_service::return_transport(state);
+    crate::app::lan_service::return_transport(&mut state.frontend, &mut state.match_state);
     state.audio.restore_sound_master();
 }
 
@@ -127,20 +127,6 @@ impl AppState {
     pub(crate) fn hd_map_previews(&self) -> bool {
         self.persistence
             .hd_map_previews(self.platform.capture_choices())
-    }
-
-    pub(crate) fn sidebar_frame_for(
-        &self,
-        width: u32,
-        height: u32,
-    ) -> crate::ui::sidebar::SidebarFrame {
-        sidebar_frame_for(
-            &self.platform,
-            &self.persistence,
-            &self.match_state.match_presentation.sidebar_layout_spec,
-            width,
-            height,
-        )
     }
 
     pub(crate) fn match_zoom_pass(&self) -> Option<&crate::render::upscale_pass::UpscalePass> {

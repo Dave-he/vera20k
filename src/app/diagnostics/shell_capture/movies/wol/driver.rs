@@ -93,10 +93,11 @@ impl WolCapture {
                     return Ok(());
                 }
                 if self.target.my_info() {
-                    let rect = crate::app::frontend::shell_layout::wol_welcome_layout(state)
-                        .page
-                        .button_rect(crate::ui::wol_shell::MY_INFORMATION)
-                        .context("My Information")?;
+                    let rect =
+                        crate::app::frontend::shell_layout::wol_welcome_layout(&state.renderer.gpu)
+                            .page
+                            .button_rect(crate::ui::wol_shell::MY_INFORMATION)
+                            .context("My Information")?;
                     welcome_click(state, rect);
                     ensure!(
                         state.frontend.shell_exit.is_some(),
@@ -112,10 +113,11 @@ impl WolCapture {
                     } else {
                         (crate::ui::wol_shell::PLAY_BUDDY, WolPhase::ServiceLogin)
                     };
-                    let rect = crate::app::frontend::shell_layout::wol_welcome_layout(state)
-                        .page
-                        .button_rect(id)
-                        .context("welcome button")?;
+                    let rect =
+                        crate::app::frontend::shell_layout::wol_welcome_layout(&state.renderer.gpu)
+                            .page
+                            .button_rect(id)
+                            .context("welcome button")?;
                     welcome_click(state, rect);
                     self.event(frame, json!({"0x10E button (test service)": id}));
                     self.phase = next;
@@ -129,19 +131,21 @@ impl WolCapture {
                     (crate::ui::wol_shell::CUSTOM_MATCH, "Custom Match")
                 };
                 if self.target.test_service() {
-                    let rect = crate::app::frontend::shell_layout::wol_welcome_layout(state)
-                        .page
-                        .button_rect(mode_button)
-                        .context("mode button")?;
+                    let rect =
+                        crate::app::frontend::shell_layout::wol_welcome_layout(&state.renderer.gpu)
+                            .page
+                            .button_rect(mode_button)
+                            .context("mode button")?;
                     welcome_click(state, rect);
                     self.event(frame, format!("0x10E {mode_name} (test service)"));
                     self.phase = WolPhase::ServiceLogin;
                     return Ok(());
                 }
-                let rect = crate::app::frontend::shell_layout::wol_welcome_layout(state)
-                    .page
-                    .button_rect(mode_button)
-                    .context("mode button")?;
+                let rect =
+                    crate::app::frontend::shell_layout::wol_welcome_layout(&state.renderer.gpu)
+                        .page
+                        .button_rect(mode_button)
+                        .context("mode button")?;
                 welcome_click(state, rect);
                 ensure!(
                     state.frontend.shell_exit.is_some(),
@@ -1005,8 +1009,9 @@ impl WolCapture {
                         WolPhase::Settle(2)
                     } else if matches!(self.target, WolTarget::InternetMenu) {
                         ensure!(
-                            crate::app::input::pause_menu::current_template(state)
-                                == crate::ui::shell::pause_menu::PauseMenuTemplate::Internet,
+                            crate::app::input::pause_menu::current_template(
+                                &state.match_state.match_presentation
+                            ) == crate::ui::shell::pause_menu::PauseMenuTemplate::Internet,
                             "a WOL match did not open FF"
                         );
                         WolPhase::Settle(2)
@@ -1889,7 +1894,13 @@ impl WolCapture {
                         })
                         .context("a two-player map")?;
                     crate::app::shell_network_setup::commit_map_selection(
-                        state, mode_id, two, None,
+                        state.platform.game_config.as_ref(),
+                        &mut state.frontend,
+                        &mut state.match_state,
+                        &state.process_assets,
+                        mode_id,
+                        two,
+                        None,
                     )?;
                     for name in ["Boris", "Ivan", "Sofia", "Lena"] {
                         crate::app::shell_wol::service_event(
@@ -2149,7 +2160,9 @@ impl WolCapture {
                 self.buddy_shown(state, frame)?;
             }
             WolPhase::Mismatch => {
-                let Some(verify) = crate::app::shell_network_setup::verify(state) else {
+                let Some(verify) = crate::app::shell_network_setup::verify(
+                    state.frontend.network_setup_protocol.as_ref(),
+                ) else {
                     return Ok(());
                 };
                 let Some(message) = &verify.mismatch else {

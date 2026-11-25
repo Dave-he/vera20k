@@ -26,7 +26,7 @@ pub(crate) fn login_layout(state: &AppState) -> WolLoginLayout {
         .as_ref()
         .and_then(WolVisit::login)
         .map_or(LoginPolicy::Legacy, |login| login.policy);
-    shell_layout::on(state, |w, h, scale| {
+    shell_layout::on(&state.renderer.gpu, |w, h, scale| {
         WolLoginLayout::new(w, h, scale, policy)
     })
 }
@@ -73,7 +73,12 @@ pub(super) fn open(state: &mut AppState) {
         super::login_info::refresh(&mut state.frontend.login_info);
     }
     super::leaf::open_art(state, DIALOG);
-    let _ = App::ensure_skirmish_shell_chrome(state);
+    let _ = App::ensure_skirmish_shell_chrome(
+        &state.renderer,
+        &mut state.frontend,
+        &state.process_assets,
+        &state.persistence.options_profile,
+    );
     sync(state);
 }
 

@@ -107,7 +107,10 @@ fn admit_room_setup(
     // The room's agreement is retired once the options are admitted: a
     // refused admission leaves the readiness it had.
     if changed {
-        crate::app::shell_network_setup::invalidate_network_agreement(state)?;
+        crate::app::shell_network_setup::invalidate_network_agreement(
+            &mut state.frontend.network_setup_protocol,
+            &mut state.match_state.session,
+        )?;
     }
     for event in events {
         crate::app::shell_network_setup::service_event(state, event).inspect_err(|_| {
@@ -216,7 +219,7 @@ pub(super) fn apply_event(
             }
             let grant = decode_relay_grant(&renewed.relay, &renewed.match_id, &service.player_id)?;
             crate::app::lan_service::renew_online_relay(
-                state,
+                &mut state.match_state,
                 renewed.relay.address,
                 &grant.ticket,
                 grant.key,
@@ -264,7 +267,7 @@ pub(super) fn apply_event(
             }
             let grant = decode_watch_grant(&renewed.relay, &renewed.match_id)?;
             crate::app::lan_service::renew_online_relay(
-                state,
+                &mut state.match_state,
                 renewed.relay.address,
                 &grant.ticket,
                 grant.key,
@@ -675,7 +678,7 @@ pub(super) fn apply_event(
                 "unadmitted start"
             );
             if !pending.probes_started {
-                crate::app::lan_service::begin_online_latency_probe(state)?;
+                crate::app::lan_service::begin_online_latency_probe(&mut state.match_state)?;
                 pending.probes_started = true;
                 pending.deadline = Instant::now() + service.relay_timeout;
             }
@@ -700,7 +703,7 @@ pub(super) fn apply_event(
             );
             let grant = decode_relay_grant(&timing.relay, &timing.match_id, &service.player_id)?;
             crate::app::lan_service::renew_online_relay(
-                state,
+                &mut state.match_state,
                 timing.relay.address,
                 &grant.ticket,
                 grant.key,
@@ -724,7 +727,10 @@ pub(super) fn apply_event(
                 names.as_deref().unwrap_or_default()
             );
             if service.pending.is_none()
-                && crate::app::shell_network_setup::verify(state).is_none()
+                && crate::app::shell_network_setup::verify(
+                    state.frontend.network_setup_protocol.as_ref(),
+                )
+                .is_none()
                 && state.frontend.network_setup_protocol.is_none()
             {
                 // This game already failed the start and left the room: only

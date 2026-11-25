@@ -34,8 +34,8 @@ pub(super) fn enter_timed_start(
         service.relay_renewal_due = Some(now_ms);
     }
     // A new match: no earlier one's result may stand for it.
-    crate::app::App::clear_match_result(state);
-    crate::app::lan_service::apply_online_timing(state, pings)?;
+    crate::app::App::clear_match_result(&mut state.frontend);
+    crate::app::lan_service::apply_online_timing(&mut state.match_state, pings)?;
     let count = state
         .match_state
         .session
@@ -202,12 +202,17 @@ pub(super) fn prepare_watch(
     let names: Vec<_> = started.users.iter().map(|user| user.name.clone()).collect();
     let room = started.options.campaign.clone();
     if let Some(room) = &room {
-        campaign_room::verify_current(state, room)?;
+        campaign_room::verify_current(
+            state.platform.game_config.as_ref(),
+            &state.process_assets,
+            room,
+        )?;
     }
     let options = started.options.into_options(&followed)?;
     let speed = options.launch.options.game_speed;
     crate::app::shell_network_setup::install_watch_setup(
-        state,
+        &mut state.frontend,
+        &mut state.match_state,
         options,
         crate::app::match_runtime::session::NetworkRoom {
             tournament: started.tournament != 0,
@@ -294,7 +299,11 @@ pub(super) fn poll_watch(state: &mut AppState, service: &mut LiveService) -> Res
     let watching = service.watching.as_mut().expect("checked watch");
     let start = watching.start.take().expect("checked start");
     let match_id = watching.match_id.clone();
-    let agreement = crate::app::shell_network_setup::agreement::local(state)?;
+    let agreement = crate::app::shell_network_setup::agreement::local(
+        state.platform.game_config.as_ref(),
+        &state.match_state.session,
+        &mut state.process_assets,
+    )?;
     ensure!(
         agreement.version == start.version && agreement.rules_digest == start.rules_digest,
         "this game's version or rules differ from the match's"
@@ -488,7 +497,10 @@ pub(crate) fn begin_spawned_match(
         .collect();
     let host_name = users[0].0.clone();
     crate::app::shell_network_setup::install_external_setup(
-        state,
+        state.platform.game_config.as_ref(),
+        &mut state.frontend,
+        &mut state.match_state,
+        &state.process_assets,
         launch,
         crate::app::match_runtime::session::NetworkReturnContext::Wol,
     )?;
@@ -552,7 +564,7 @@ pub(crate) fn end_spawned_match(wol: Option<&mut WolVisit>) -> bool {
 /// `finish` with the result after a match, else `leave` for a failed
 /// admission; the process quits on its acknowledgement or the deadline.
 pub(super) fn poll_spawned_exit(state: &mut AppState, service: &mut LiveService) {
-    let result = crate::app::App::match_result(state)
+    let result = crate::app::App::match_result(&state.frontend)
         .unwrap_or(crate::app::cncnet::ExternalMatchResult::Quit);
     let opponents_left = state.frontend.external_progress.opponents_left;
     let Some(spawned) = spawned_visit_mut(state.frontend.wol.as_mut()) else {
@@ -588,7 +600,7 @@ fn enter_restored_start(
     match_id: String,
     pings: &[i32],
 ) -> Result<()> {
-    crate::app::lan_service::mark_online_restore(state)?;
+    crate::app::lan_service::mark_online_restore(&mut state.match_state)?;
     let start = enter_timed_start(state, service, match_id, pings);
     if service.watching.is_none() {
         return start;
@@ -623,7 +635,7 @@ pub(super) fn poll_relay(state: &mut AppState, service: &mut LiveService) -> Res
         if transport.relay_ready() {
             let transport = pending.transport.take().expect("ready pending relay");
             crate::app::lan_service::install_online_transport(
-                state,
+                &mut state.match_state,
                 transport,
                 &pending.host_name,
             )?;
@@ -637,7 +649,7 @@ pub(super) fn poll_relay(state: &mut AppState, service: &mut LiveService) -> Res
         }
     }
     if pending.probes_started && !pending.latencies_reported {
-        if let Some(pings) = crate::app::lan_service::online_peer_round_trips(state) {
+        if let Some(pings) = crate::app::lan_service::online_peer_round_trips(&state.match_state) {
             let pings: Vec<_> = pings.into_iter().map(|(source_index, round_trip_ms)|
                 json!({"source_index":source_index,"round_trip_ms":round_trip_ms})).collect();
             let match_id = pending.match_id.clone();

@@ -532,7 +532,7 @@ impl WolLobby {
 }
 
 pub(crate) fn layout(state: &AppState) -> WolLobbyLayout {
-    shell_layout::on(state, |w, h, scale| {
+    shell_layout::on(&state.renderer.gpu, |w, h, scale| {
         match lobby(state.frontend.wol.as_ref()) {
             Some(lobby) => lobby.ui.layout(w, h, scale),
             None => WolLobbyLayout::new(w, h, scale, &PAGE),
@@ -543,7 +543,7 @@ pub(crate) fn layout(state: &AppState) -> WolLobbyLayout {
 /// [`layout`] as the online page's chat view lays it out, whichever view
 /// shows: the log the lobby's chat wraps its messages to.
 pub(crate) fn chat_layout(state: &AppState) -> WolLobbyLayout {
-    shell_layout::on(state, |w, h, scale| {
+    shell_layout::on(&state.renderer.gpu, |w, h, scale| {
         match lobby(state.frontend.wol.as_ref()) {
             Some(lobby) => lobby.ui.chat_layout(w, h, scale),
             None => WolLobbyLayout::new(w, h, scale, &PAGE),
@@ -1024,7 +1024,7 @@ pub(super) fn options_screen(state: &AppState) -> (i32, i32) {
     if profile.screen_width > 0 && profile.screen_height > 0 {
         (profile.screen_width, profile.screen_height)
     } else {
-        let (w, h) = shell_layout::shell_screen_size(state);
+        let (w, h) = shell_layout::shell_screen_size(&state.renderer.gpu);
         (w as i32, h as i32)
     }
 }
@@ -1185,7 +1185,12 @@ pub(crate) fn open(state: &mut AppState, postmatch: bool) {
         now,
         !visit.legacy_ui,
     ));
-    let _ = App::ensure_skirmish_shell_chrome(state);
+    let _ = App::ensure_skirmish_shell_chrome(
+        &state.renderer,
+        &mut state.frontend,
+        &state.process_assets,
+        &state.persistence.options_profile,
+    );
     super::leaf::open_art(state, DIALOG);
     // The MOTD [0xB73AE0], and the global is cleared.
     if let Some(motd) = motd.filter(|motd| !motd.is_empty()) {
@@ -1386,7 +1391,13 @@ fn open_game_room(
         // Before anyone is seated again: the Cooperative mode admits only
         // its two players.
         if let Some(resume) = resume.filter(|_| !observe)
-            && let Err(error) = crate::app::shell_network_setup::resume_cooperative(state, resume)
+            && let Err(error) = crate::app::shell_network_setup::resume_cooperative(
+                state.platform.game_config.as_ref(),
+                &mut state.frontend,
+                &mut state.match_state.session,
+                &state.process_assets,
+                resume,
+            )
         {
             log::warn!("WOL reopened room keeps its mode: {error:#}");
         }
@@ -1728,7 +1739,10 @@ fn admit_row(state: &mut AppState, row: usize, observer: bool, show: bool) -> bo
         Err(key) => {
             if let (true, Some(key)) = (show, key) {
                 let text = if key == crate::ui::wol_lobby::RULES_DIFFER {
-                    crate::app::shell_network_setup::agreement::rules_differ_text(state)
+                    crate::app::shell_network_setup::agreement::rules_differ_text(
+                        &state.frontend.mods,
+                        &state.process_assets,
+                    )
                 } else {
                     state.csf_text(key)
                 };
@@ -1875,7 +1889,12 @@ fn left_channel(state: &mut AppState) {
     };
     // 0x785764..0x785788: PlayerLeft in a channel of a nonzero type.
     if current.kind != 0 {
-        setup::play_player_left(state);
+        setup::play_player_left(
+            &state.frontend,
+            &state.match_state,
+            &state.process_assets,
+            &mut state.audio.sfx_player,
+        );
     }
     if super::quick_match::mode_active(state.frontend.wol.as_ref()) {
         return;
@@ -2294,7 +2313,10 @@ fn answer_resolution(state: &mut AppState, channel: WolChannel, yes: bool) {
         let profile = &mut state.persistence.options_profile;
         profile.screen_width = width;
         profile.screen_height = height;
-        crate::app::persistence::options::persist_options_profile(state);
+        crate::app::persistence::options::persist_options_profile(
+            &state.platform,
+            &state.persistence.options_profile,
+        );
     }
     if limit < options_screen(state).0 {
         join_failed_locally(state, true);

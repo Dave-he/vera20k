@@ -296,7 +296,12 @@ pub(super) fn open_add_buddy_query(state: &mut AppState, opponent: &str) {
         opponent: opponent.to_owned(),
     }));
     state.frontend.shell_route = crate::app::shell_route::ShellRoute::Wol;
-    let _ = App::ensure_skirmish_shell_chrome(state);
+    let _ = App::ensure_skirmish_shell_chrome(
+        &state.renderer,
+        &mut state.frontend,
+        &state.process_assets,
+        &state.persistence.options_profile,
+    );
     state.frontend.shell_controller.reset_to(ADD_BUDDY_DIALOG);
     let question =
         add_buddy_text(state.frontend.wol.as_ref(), &state.process_assets).unwrap_or_default();
@@ -356,7 +361,7 @@ pub(crate) fn dialog(
 
 pub(crate) fn layout(state: &AppState) -> Option<WolPersonaLayout> {
     let dialog = dialog(state.frontend.wol.as_ref())?;
-    Some(shell_layout::on(state, |w, h, scale| {
+    Some(shell_layout::on(&state.renderer.gpu, |w, h, scale| {
         WolPersonaLayout::new(dialog, w, h, scale)
     }))
 }

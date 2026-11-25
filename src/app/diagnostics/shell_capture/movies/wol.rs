@@ -1124,7 +1124,7 @@ impl WolCapture {
                 "the WOL handoff became offline"
             );
             return Ok(state.frontend.screen == GameScreen::Loading
-                && crate::app::loading::pump::next_native_loading_frame(state)
+                && crate::app::loading::pump::next_native_loading_frame(&state.frontend)
                     == Some(crate::app::loading::pump::NextLoadingFrame::First));
         }
         // Behind a box `0x10E`/`0x10F` is gone, and with it the status line;
@@ -1372,7 +1372,7 @@ fn wol_setup_settled(state: &AppState, host: bool) -> bool {
     MoviesCapture::slide_settled(
         state,
         ShellSlideKind::NetworkSetup(crate::app::shell_network_setup::setup_dialog(
-            state,
+            &state.frontend,
             host,
             crate::ui::multiplayer_setup::SetupFlavor::Wol,
         )),
@@ -1634,7 +1634,12 @@ fn unverified_host_options(state: &AppState) -> Result<NetworkSetupEvent> {
         .context("C9 setup")?
         .clone();
     let file = launch.selected_map_file.clone().context("host map")?;
-    let mut map_metadata = crate::app::shell_network_setup::local_map_metadata(state, &file)?;
+    let mut map_metadata = crate::app::shell_network_setup::local_map_metadata(
+        state.platform.game_config.as_ref(),
+        &state.frontend.scenario_catalog,
+        &state.process_assets,
+        &file,
+    )?;
     map_metadata.digest = "another version".into();
     Ok(NetworkSetupEvent::HostSetup(
         crate::app::shell_network_setup::HostOptions {

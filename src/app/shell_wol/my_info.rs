@@ -49,7 +49,12 @@ fn country_rows(state: &AppState) -> Vec<MyInfoRow> {
         .into_iter()
         .map(|item| match item {
             SkirmishComboItem::Country(SkirmishCountryChoice::Country(country)) => MyInfoRow::text(
-                crate::app::frontend::skirmish_shell_render::combo_item_label(state, item),
+                crate::app::frontend::skirmish_shell_render::combo_item_label(
+                    &state.frontend,
+                    &state.match_state,
+                    &state.process_assets,
+                    item,
+                ),
                 crate::app::frontend::skirmish_shell_render::side_item_data_for_country(country),
             ),
             _ => MyInfoRow::text(state.csf_text("GUI:RandomEx"), -2),
@@ -70,7 +75,12 @@ fn color_rows(state: &AppState) -> Vec<MyInfoRow> {
                 swatch: Some(index),
             },
             _ => MyInfoRow::text(
-                crate::app::frontend::skirmish_shell_render::combo_item_label(state, item),
+                crate::app::frontend::skirmish_shell_render::combo_item_label(
+                    &state.frontend,
+                    &state.match_state,
+                    &state.process_assets,
+                    item,
+                ),
                 -2,
             ),
         })
@@ -123,7 +133,12 @@ pub(super) fn open(state: &mut AppState) {
         colors,
     };
     super::leaf::open_art(state, DIALOG);
-    let _ = App::ensure_skirmish_shell_chrome(state);
+    let _ = App::ensure_skirmish_shell_chrome(
+        &state.renderer,
+        &mut state.frontend,
+        &state.process_assets,
+        &state.persistence.options_profile,
+    );
     state.frontend.shell_controller.reset_to(DIALOG);
     let Some(root) = sync(state) else {
         return;
@@ -191,7 +206,7 @@ pub(super) fn page_open(wol: Option<&WolVisit>) -> bool {
 }
 
 pub(crate) fn layout(state: &AppState) -> WolMyInfoLayout {
-    shell_layout::on(state, WolMyInfoLayout::new)
+    shell_layout::on(&state.renderer.gpu, WolMyInfoLayout::new)
 }
 
 /// Builds and places `0x114`'s widgets; the root.

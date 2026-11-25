@@ -9,6 +9,7 @@ use crate::app::input::cursor::{
 use crate::app::input::entity_pick::HoverObject;
 use crate::app::presentation::frame::{ObjectRecord, PresentationFrame};
 use crate::app::presentation::instances::in_view;
+use crate::app::presentation::state::MatchPresentationState;
 use crate::app::types::{CursorId, HoverTargetKind, SoftwareCursorSequence};
 use crate::assets::csf_file::{CsfArg, format_csf};
 use crate::map::entities::EntityCategory;
@@ -653,7 +654,11 @@ impl BuildingBarGeometry {
 /// `[x, y, width, height]`.
 #[cfg(feature = "phobos")]
 pub(crate) fn foot_select_bracket(sx: f32, sy: f32, infantry: bool) -> [f32; 4] {
-    let length = (if infantry { UNIT_PIPS_INFANTRY } else { UNIT_PIPS_VEHICLE }) as f32;
+    let length = (if infantry {
+        UNIT_PIPS_INFANTRY
+    } else {
+        UNIT_PIPS_VEHICLE
+    }) as f32;
     let nudge = if infantry { 1.0 } else { 0.0 };
     [
         sx - length + nudge + 1.0,
@@ -1069,7 +1074,13 @@ pub(crate) fn build_control_group_status_instances(
     };
     let local_owner_id = local_owner.and_then(|name| sim.interner().get(name));
     let (tactical_x, tactical_y, tactical_width, tactical_height) =
-        crate::app::input::camera::tactical_viewport_px(state);
+        crate::app::input::camera::tactical_viewport_px(
+            &state.platform,
+            &state.renderer,
+            &state.frontend.screen,
+            &state.match_state.match_presentation,
+            &state.persistence,
+        );
     let zoom = state.match_state.input.zoom_level;
     let tactical_clip = [
         (tactical_x as f32 / zoom).round() as i32,
@@ -1171,12 +1182,12 @@ pub(crate) fn build_building_status_render_instances(
         // building like the Super lines. `allied` is true for the local house
         // as well as allies, so an enemy's row is never shown. Not restricted
         // to the selected building.
-        let info_lines: Vec<String> = if convenience_help && allied && visible && info_shift.is_some()
-        {
-            entity.hud.info_lines().collect()
-        } else {
-            Vec::new()
-        };
+        let info_lines: Vec<String> =
+            if convenience_help && allied && visible && info_shift.is_some() {
+                entity.hud.info_lines().collect()
+            } else {
+                Vec::new()
+            };
         // DrawExtraInfo needs the building selected, including when it is
         // also hovered.
         let label = (status_shift.is_some()
@@ -1243,12 +1254,7 @@ pub(crate) fn build_building_status_render_instances(
                     measure[1].wrapping_add(2) as f32 + camera[1],
                 ];
                 labels.push(status_text_instances(
-                    font,
-                    &text,
-                    origin,
-                    measure,
-                    camera,
-                    tint,
+                    font, &text, origin, measure, camera, tint,
                 ));
             }
         }
@@ -1273,12 +1279,7 @@ pub(crate) fn build_building_status_render_instances(
                     measure[1].wrapping_add(2) as f32 + camera[1],
                 ];
                 labels.push(status_text_instances(
-                    font,
-                    text,
-                    origin,
-                    measure,
-                    camera,
-                    tint,
+                    font, text, origin, measure, camera, tint,
                 ));
             }
         }
@@ -1338,12 +1339,7 @@ pub(crate) fn build_building_status_render_instances(
             measure[1].wrapping_add(2) as f32 + camera[1],
         ];
         labels.push(status_text_instances(
-            font,
-            &text,
-            origin,
-            clipped,
-            camera,
-            tint,
+            font, &text, origin, clipped, camera, tint,
         ));
     }
     labels
@@ -1461,7 +1457,13 @@ pub(crate) fn build_building_status_instances(
     let Some(current_house) = sim.session().current_house() else {
         return BuildingStatusTextInstances::default();
     };
-    let (left, top, width, height) = crate::app::input::camera::tactical_viewport_px(state);
+    let (left, top, width, height) = crate::app::input::camera::tactical_viewport_px(
+        &state.platform,
+        &state.renderer,
+        &state.frontend.screen,
+        &state.match_state.match_presentation,
+        &state.persistence,
+    );
     let zoom = state.match_state.input.zoom_level;
     build_building_status_render_instances(
         sim,
@@ -2294,7 +2296,12 @@ pub(crate) fn techno_extras_for_parent(
                 shape.frame_count(),
             ))
         {
-            strip.power_off = prefix(shape, Mark::PowerOff, frame, if repairing { 18.0 } else { 0.0 });
+            strip.power_off = prefix(
+                shape,
+                Mark::PowerOff,
+                frame,
+                if repairing { 18.0 } else { 0.0 },
+            );
         }
     }
     if admitted_techno_observer(sim, entity, local_owner_id).is_none() {
@@ -2324,7 +2331,12 @@ pub(crate) fn techno_extras_for_parent(
                 point: (f32, f32)| {
         health_templates::mark(Mark::Rank, Some(HealthClass::of(entity.category())), frame)
             .and_then(|(frame, offset)| {
-                instance(shape, frame, health_templates::shifted(point, offset), 0.0006)
+                instance(
+                    shape,
+                    frame,
+                    health_templates::shifted(point, offset),
+                    0.0006,
+                )
             })
             .filter(|rank| viewport.contains(rank))
             .map(|mut rank| {
@@ -2486,7 +2498,11 @@ pub(crate) fn techno_extras_for_parent(
             false,
             Some((band, filled, num_pips)),
             start,
-            |pip| strip.fills.extend(instance(shape, pip.frame, pip.point, 0.0006)),
+            |pip| {
+                strip
+                    .fills
+                    .extend(instance(shape, pip.frame, pip.point, 0.0006))
+            },
         );
         if pip_zoom < 1.0 {
             keep_health_strip_screen_size(&mut strip, start, pip_zoom);
@@ -2579,7 +2595,11 @@ pub(crate) fn techno_extras_for_parent(
         false,
         Some((band, filled as i32, num_pips as i32)),
         anchor,
-        |pip| strip.fills.extend(instance(shape, pip.frame, pip.point, 0.0005)),
+        |pip| {
+            strip
+                .fills
+                .extend(instance(shape, pip.frame, pip.point, 0.0005))
+        },
     );
     //709B0F/6F6A8E: nonbuilding scale starts at health anchor(-15,+10),
     //with the Infantry-only+11 X. The shared draw owner retains each arm's
@@ -2620,7 +2640,12 @@ pub(crate) fn techno_extras_for_parent(
             // frame; its built-in template has each class's place.
             strip.self_heal = health_templates::mark(Mark::SelfHeal, Some(class), arm.frame())
                 .and_then(|(frame, offset)| {
-                    instance(shape, frame, health_templates::shifted((sx, sy), offset), 0.0004)
+                    instance(
+                        shape,
+                        frame,
+                        health_templates::shifted((sx, sy), offset),
+                        0.0004,
+                    )
                 })
                 .map(|mut instance| {
                     instance.draw_state =
@@ -2804,8 +2829,7 @@ fn scale_pip_rows(
     {
         let docked = manager.count_docked_spawns();
         pips.extend(
-            (0..object.spawns_number as usize)
-                .map(|slot| pip(slot, usize::from(slot < docked))),
+            (0..object.spawns_number as usize).map(|slot| pip(slot, usize::from(slot < docked))),
         );
     }
     //709C27..D17 precedes passengers and uses raw OccupyPip, including
@@ -3097,7 +3121,14 @@ pub(crate) fn build_software_cursor_instances(
         return (Vec::new(), None);
     };
     let (id, sequence, index) = if id == CursorId::Default
-        && crate::app::input::planning_mode::node_at_cursor(state).is_some()
+        && crate::app::input::planning_mode::node_at_cursor(
+            &state.platform,
+            &state.renderer,
+            &state.frontend,
+            &state.match_state,
+            &state.persistence,
+        )
+        .is_some()
     {
         //63AC41..4E selects row0's static small frame when only hovering.
         let Some(cursor) = state
@@ -3119,7 +3150,14 @@ pub(crate) fn build_software_cursor_instances(
     let Some(frame) = sequence.frames.get(index) else {
         return (Vec::new(), None);
     };
-    if crate::app::input::hardware_cursor::takes_cursor(state, id, index) {
+    if crate::app::input::hardware_cursor::takes_cursor(
+        &state.platform,
+        &state.renderer,
+        &state.frontend.screen,
+        &state.match_state.input,
+        id,
+        index,
+    ) {
         return (Vec::new(), None);
     }
     // Cursor rendering: the hotspot pixel must sit exactly at the OS cursor position.
@@ -3146,14 +3184,10 @@ pub(crate) fn build_software_cursor_instances(
 
 /// The texture of the frame a draw's cursor sprite was built from.
 pub(crate) fn software_cursor_texture(
-    state: &AppState,
+    presentation: &MatchPresentationState,
     draw: SoftwareCursorDraw,
 ) -> Option<&BatchTexture> {
-    let cursor = state
-        .match_state
-        .match_presentation
-        .software_cursor
-        .as_ref()?;
+    let cursor = presentation.software_cursor.as_ref()?;
     Some(&cursor.get(draw.id)?.frames.get(draw.frame)?.texture)
 }
 
@@ -3189,8 +3223,16 @@ mod tests {
     /// shows no pips.
     #[test]
     fn stock_ammo_pip_frame_tracks_the_ra2_strip() {
-        assert_eq!(super::ammo_pip_frame_for(true), 12, "RA2 conquer.mix green magazine");
-        assert_eq!(super::ammo_pip_frame_for(false), 13, "YR conqmd.mix green magazine");
+        assert_eq!(
+            super::ammo_pip_frame_for(true),
+            12,
+            "RA2 conquer.mix green magazine"
+        );
+        assert_eq!(
+            super::ammo_pip_frame_for(false),
+            13,
+            "YR conqmd.mix green magazine"
+        );
     }
 
     /// Convenience Help's reload row, formatted when drawn from the facts
@@ -4044,7 +4086,10 @@ mod tests {
             .spawn_object("E1", "Americans", 14, 14, 0, &rules)
             .unwrap();
         {
-            let b = sim.entities_mut_for_test().get_mut_for_test(building).unwrap();
+            let b = sim
+                .entities_mut_for_test()
+                .get_mut_for_test(building)
+                .unwrap();
             b.passenger_role_mut_for_test()
                 .set_occupants_for_test(vec![e1, e2], 0);
         }
@@ -4064,5 +4109,4 @@ mod tests {
 
         crate::util::ra2_launch::set(before);
     }
-
 }

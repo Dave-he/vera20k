@@ -38,9 +38,11 @@ pub(crate) struct WolOptionsPage {
 
 pub(crate) fn layout(state: &AppState) -> WolOptionsLayout {
     if modern(state.frontend.wol.as_ref()) {
-        shell_layout::on(state, |width, height, _| WolOptionsLayout::modern(width, height))
+        shell_layout::on(&state.renderer.gpu, |width, height, _| {
+            WolOptionsLayout::modern(width, height)
+        })
     } else {
-        shell_layout::on(state, WolOptionsLayout::new)
+        shell_layout::on(&state.renderer.gpu, WolOptionsLayout::new)
     }
 }
 
@@ -59,7 +61,7 @@ pub(crate) fn menu_spec(
 }
 
 pub(crate) fn sound_layout(state: &AppState) -> ShellSoundLayout {
-    shell_layout::on(state, ShellSoundLayout::new)
+    shell_layout::on(&state.renderer.gpu, ShellSoundLayout::new)
 }
 
 fn page_mut(wol: Option<&mut WolVisit>) -> Option<&mut WolOptionsPage> {
@@ -136,7 +138,7 @@ pub(crate) fn commit_close(
 /// `0x2BC` has slid out for Sound Options: the art, then `0x6B6230` runs
 /// `0xD6` because the handler cleared `g_GameActive` (`0x0078EEAD`).
 pub(crate) fn commit_open_sound(state: &mut AppState) {
-    let positions = crate::app::input::sound::volume_positions(state);
+    let positions = crate::app::input::sound::volume_positions(&state.persistence.options_profile);
     let sliders_enabled = state.audio.launcher_audio_available;
     let Some(page) = page_mut(state.frontend.wol.as_mut()) else {
         return;
@@ -290,7 +292,7 @@ pub(crate) fn sync_gui(state: &mut AppState) {
     };
     let audio = modern(state.frontend.wol.as_ref()).then(|| {
         (
-            crate::app::input::sound::volume_positions(state),
+            crate::app::input::sound::volume_positions(&state.persistence.options_profile),
             state.audio.launcher_audio_available,
         )
     });
@@ -341,7 +343,13 @@ fn handle_events(state: &mut AppState) {
         let gui = state.frontend.shell_controller.gui();
         match event {
             PageEvent::Cue(cue) => {
-                App::play_page_cue(state, cue);
+                App::play_page_cue(
+                    &state.frontend,
+                    &state.match_state,
+                    &state.process_assets,
+                    &mut state.audio.sfx_player,
+                    cue,
+                );
                 if matches!(cue, PageCue::ComboOpen | PageCue::ComboClose) {
                     state.frontend.shell_status_line.repaint();
                 }

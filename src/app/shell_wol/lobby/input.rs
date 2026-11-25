@@ -48,7 +48,7 @@ pub(crate) fn sync(state: &mut AppState) {
 /// dialog and no popup. It is the chat edit while the chat shows, else VERA's
 /// room search.
 pub(crate) fn ime_edit_rect(state: &AppState) -> Option<crate::ui::shell::geom::RectPx> {
-    let routed = crate::app::input::precedence::route_page(state)
+    let routed = crate::app::input::precedence::route_page(&state.frontend)
         == crate::app::input::precedence::ScreenPage::Wol
         && !shell_transition::blocks_shell_input(state)
         && !App::wol_quick_match_verify(state)
@@ -69,7 +69,13 @@ pub(crate) fn ime_edit_rect(state: &AppState) -> Option<crate::ui::shell::geom::
 fn apply(state: &mut AppState, effects: Vec<WolLobbyEffect>) {
     for effect in effects {
         match effect {
-            WolLobbyEffect::Cue(cue) => App::play_page_cue(state, cue),
+            WolLobbyEffect::Cue(cue) => App::play_page_cue(
+                &state.frontend,
+                &state.match_state,
+                &state.process_assets,
+                &mut state.audio.sfx_player,
+                cue,
+            ),
             WolLobbyEffect::Card(name) => super::player_card::opened(
                 state.frontend.wol.as_mut(),
                 &state.platform.window,
