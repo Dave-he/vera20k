@@ -634,6 +634,14 @@ impl CampaignScorePage {
             .map(|animation| animation.frame)
     }
 
+    /// Hold the specified SCRA frame once the renderer has presented it, so a
+    /// steady diagnostic capture can wait for the text to finish revealing.
+    pub(crate) fn hold_emblem_frame_for_capture(&mut self, frame: usize, now: Instant) {
+        if let Some(animation) = self.emblem_animation.as_mut().filter(|a| a.frame == frame) {
+            animation.next_tick_at = now + Duration::from_secs(3600);
+        }
+    }
+
     /// Next native timer deadline while the SCRA kind-4 animation is active.
     pub fn next_emblem_animation_tick(&self) -> Option<Instant> {
         self.emblem_animation
@@ -684,6 +692,22 @@ mod tests {
         let mut bare = open(opened);
         bare.start_presentation(0, opened);
         assert_eq!(bare.next_emblem_animation_tick(), None);
+    }
+
+    #[test]
+    fn steady_capture_holds_the_emblem_at_its_requested_frame() {
+        let opened = Instant::now();
+        let mut page = open(opened);
+        page.start_presentation(44, opened);
+        page.hold_emblem_frame_for_capture(1, opened);
+
+        let first_tick = opened + CAMPAIGN_SCORE_EMBLEM_INTERVAL;
+        assert_eq!(page.poll_emblem_animation(first_tick), Some(1));
+        page.hold_emblem_frame_for_capture(1, first_tick);
+        assert_eq!(
+            page.poll_emblem_animation(first_tick + CAMPAIGN_SCORE_EMBLEM_INTERVAL),
+            Some(1)
+        );
     }
 
     #[test]

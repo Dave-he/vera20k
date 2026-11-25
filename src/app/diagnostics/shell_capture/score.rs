@@ -19,12 +19,8 @@ use serde_json::{Value, json};
 /// Frames to present once the target state is reached.
 const SETTLE_FRAMES: u32 = 4;
 
-/// The SCRA frame the steady `0x103` capture shows. The emblem animates on a
-/// 100 ms wall-clock timer that keeps running once the statics settle (frame 4
-/// at about 1020 ms after the page opens, frame 5 at about 1055 ms), so a
-/// still taken a fixed number of frames after the settle shows frame 4 or 5
-/// by timing alone. The capture waits for this frame, the one the baseline
-/// stills show.
+/// The baseline still's SCRA frame. The steady `0x103` capture holds the
+/// emblem on this frame while the independently timed text settles.
 const STEADY_SCRA_FRAME: usize = 5;
 
 /// Whether the rendered SCRA `frame` is the steady still's
@@ -218,13 +214,13 @@ impl CampaignScoreCapture {
             App::campaign_score_shell_active(state),
             "campaign score capture left the 0x103 page"
         );
-        if self.phase == CampaignScorePhase::CampaignScore
-            && state
-                .frontend
-                .campaign_score_page
-                .as_ref()
-                .is_some_and(|page| page.statics.is_terminal())
-        {
+        let page = state
+            .frontend
+            .campaign_score_page
+            .as_mut()
+            .context("campaign score page")?;
+        page.hold_emblem_frame_for_capture(STEADY_SCRA_FRAME, Instant::now());
+        if self.phase == CampaignScorePhase::CampaignScore && page.statics.is_terminal() {
             self.phase = CampaignScorePhase::Settling(SETTLE_FRAMES);
         } else if let CampaignScorePhase::Settling(remaining) = self.phase {
             self.phase = CampaignScorePhase::Settling(remaining.saturating_sub(1));
