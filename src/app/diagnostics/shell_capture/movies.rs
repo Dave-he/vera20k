@@ -19,9 +19,13 @@ pub(crate) use wol::{WOL_CHECKPOINTS, WolTarget};
 mod opening;
 pub(super) use opening::MAX_TRACE_CAPTURE_CELLS;
 pub(super) use opening::MAX_TRACE_LEGS;
+pub(super) use opening::MAX_TRACE_TRAIN;
 pub(crate) use opening::OpeningTarget;
 pub(super) use opening::TraceCaptureCells;
 pub(super) use opening::TraceLegs;
+pub(super) use opening::TraceOrders;
+pub(super) use opening::TraceTrain;
+pub(super) use opening::TraceTypeName;
 
 /// Native control corpus read from this checkout's `tools/` at capture time.
 /// Diagnostics run from a development checkout, so the release binary does

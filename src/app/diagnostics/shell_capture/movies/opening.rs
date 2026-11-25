@@ -26,9 +26,97 @@ pub type TraceLegs = [(u64, (u16, u16)); MAX_TRACE_LEGS];
 /// How many legs a trigger trace may name.
 pub const MAX_TRACE_LEGS: usize = 8;
 
+/// How many bytes a trained unit type name may hold.
+pub const TRACE_TYPE_NAME_MAX: usize = 16;
+
+/// How many unit types a trigger trace may train.
+pub const MAX_TRACE_TRAIN: usize = 4;
+
+/// A unit type name a trigger trace trains. The name is held inline, so the
+/// whole trace stays `Copy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TraceTypeName {
+    bytes: [u8; TRACE_TYPE_NAME_MAX],
+    len: u8,
+}
+
+impl TraceTypeName {
+    /// Hold the name, if it fits.
+    pub fn new(name: &str) -> Option<Self> {
+        let bytes = name.as_bytes();
+        if bytes.len() > TRACE_TYPE_NAME_MAX {
+            return None;
+        }
+        let mut held = [0u8; TRACE_TYPE_NAME_MAX];
+        held[..bytes.len()].copy_from_slice(bytes);
+        Some(Self {
+            bytes: held,
+            len: bytes.len() as u8,
+        })
+    }
+
+    /// The name as the type table spells it.
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..self.len as usize]).unwrap_or("")
+    }
+}
+
+/// The units a trigger trace trains: each type name and how many of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TraceTrain {
+    entries: [(TraceTypeName, u32); MAX_TRACE_TRAIN],
+    count: u8,
+}
+
+impl TraceTrain {
+    /// The train orders, in the order they were named.
+    pub fn iter<'a>(&'a self) -> impl Iterator<Item = (&'a str, u32)> + 'a {
+        self.entries[..self.count as usize]
+            .iter()
+            .map(|(name, count)| (name.as_str(), *count))
+    }
+
+    /// Name one more type and how many of it, if the list has room.
+    pub fn push(&mut self, name: TraceTypeName, count: u32) -> bool {
+        let next = self.count as usize;
+        if next >= MAX_TRACE_TRAIN {
+            return false;
+        }
+        self.entries[next] = (name, count);
+        self.count += 1;
+        true
+    }
+
+    /// How many types the list names.
+    pub fn count(&self) -> usize {
+        self.count as usize
+    }
+}
+
 /// How long a capture order may stay without reaching its engineer before
 /// the probe treats it as dropped and frees the cell for the next building.
 const CAPTURE_ORDER_GRACE_TICKS: u64 = 120;
+
+/// The player orders a trigger trace plays.
+///
+/// `push` sends the player's armed units toward a cell. `capture` names the
+/// buildings the probe captures, in order, as engineers become available.
+/// `legs` names the cells the units attack toward in turn, each from its own
+/// tick. `train` names the units the player trains. `capture_after` is the
+/// tick the capture orders may first be issued on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TraceOrders {
+    /// The cell the armed force attacks toward.
+    pub push: Option<(u16, u16)>,
+    /// The buildings the probe captures, in the order they were named.
+    pub capture: Option<(TraceCaptureCells, u8)>,
+    /// The cells the force attacks toward in turn, each with its own tick.
+    pub legs: Option<(TraceLegs, u8)>,
+    /// The unit types the player trains and how many of each.
+    pub train: TraceTrain,
+    /// The tick the capture orders may first be issued on.
+    pub capture_after: Option<u64>,
+}
 
 /// One accepted capture order and how it ended.
 struct CaptureOrder {
@@ -46,6 +134,8 @@ struct CaptureOrder {
     start_cell: (u16, u16),
     /// Where the engineer stood the last time it was seen.
     last_cell: (u16, u16),
+    /// The cells the engineer walked through, with the tick it reached them.
+    route: Vec<(u64, (u16, u16))>,
     /// Why the order ended without the building changing hands.
     dropped: Option<&'static str>,
     /// The engineer's health each time it changed, with the tick it changed.
@@ -182,15 +272,16 @@ pub enum OpeningTarget {
     /// classes needs: the starting Tags, the poll and House-raise bounds,
     /// world raises, world-reading event results, attachment counts,
     /// variable writes and run-time Tags. Without `push` there is no player
-    /// input unless a probe is requested. `push` sends the player's armed
-    /// units toward a cell. `capture` names the buildings the probe captures,
-    /// in order, as engineers become available.
+    /// input unless a probe is requested. The `orders` are the player's
+    /// orders the trace plays: `push` sends the player's armed units
+    /// toward a cell, `capture` names the buildings the probe captures, in
+    /// order, as engineers become available, `legs` names the cells the
+    /// units attack toward in turn, `train` names the units the player
+    /// trains and `capture_after` is the tick the captures may start on.
     TriggerTrace {
         scenario: &'static str,
         tick: u64,
-        push: Option<(u16, u16)>,
-        capture: Option<(TraceCaptureCells, u8)>,
-        legs: Option<(TraceLegs, u8)>,
+        orders: TraceOrders,
     },
     /// Save/load that naturally created alert, then present the restored radar.
     RadarRestored,
@@ -281,6 +372,10 @@ pub(super) struct OpeningCapture {
     /// Accepted captures and their observed results, in issue order.
     capture_orders: Vec<CaptureOrder>,
     capture_in_flight: Option<CaptureInFlight>,
+    /// The units the plan trains and how many of each.
+    train: Vec<(String, u32)>,
+    /// The tick the capture orders may first be issued on.
+    capture_after: Option<u64>,
     /// What the capture probe last saw: the named cells, their buildings,
     /// the engineer it picked and whether the order was accepted.
     capture_probe: Option<Value>,
@@ -300,6 +395,17 @@ pub(super) struct OpeningCapture {
 
 impl OpeningCapture {
     pub(super) fn new(target: OpeningTarget, save_directory: PathBuf) -> Self {
+        // The train order is played once, so the capture owns it from here on.
+        let mut train = Vec::new();
+        let mut capture_after = None;
+        if let OpeningTarget::TriggerTrace { orders, .. } = &target {
+            train = orders
+                .train
+                .iter()
+                .map(|(name, count)| (name.to_string(), count))
+                .collect();
+            capture_after = orders.capture_after;
+        }
         Self {
             target,
             save_directory,
@@ -328,6 +434,8 @@ impl OpeningCapture {
             push_destination: None,
             capture_orders: Vec::new(),
             capture_in_flight: None,
+            capture_after,
+            train,
             capture_probe: None,
             capture_log: Vec::new(),
             trigger_springs: Vec::new(),
@@ -480,7 +588,10 @@ impl OpeningCapture {
         }
         self.observe(state)?;
         if let OpeningTarget::TriggerTrace {
-            capture: Some(_), ..
+            orders: TraceOrders {
+                capture: Some(_), ..
+            },
+            ..
         } = self.target
         {
             // The capture orders are followed on every frame, the last one
@@ -532,7 +643,11 @@ impl OpeningCapture {
         }
         // The first simulation tick can publish the briefing's input lock.
         // Let it commit before the trace sends any player orders.
-        if let OpeningTarget::TriggerTrace { capture, .. } = self.target
+        let capture = match &self.target {
+            OpeningTarget::TriggerTrace { orders, .. } => orders.capture,
+            _ => None,
+        };
+        if let OpeningTarget::TriggerTrace { .. } = self.target
             && !locked
             && state
                 .match_state
@@ -541,6 +656,11 @@ impl OpeningCapture {
                 .is_some_and(|runtime| runtime.simulation.session().tick() > 0)
         {
             self.issue_trace_push_orders(state)?;
+            if !self.train.is_empty() {
+                for (type_id, count) in std::mem::take(&mut self.train) {
+                    crate::app::input::commands::queue_build_by_type(state, &type_id, count);
+                }
+            }
             if let Some((cells, len)) = capture {
                 self.issue_trace_capture(state, &cells[..len as usize])?;
             }
@@ -1158,11 +1278,11 @@ impl OpeningCapture {
 
     /// The cell a trace's armed force attacks toward at a tick.
     fn destination_for(target: &OpeningTarget, tick: u64) -> Option<(u16, u16)> {
-        let OpeningTarget::TriggerTrace { push, legs, .. } = target else {
+        let OpeningTarget::TriggerTrace { orders, .. } = target else {
             return None;
         };
-        let Some((legs, count)) = legs else {
-            return *push;
+        let Some((legs, count)) = &orders.legs else {
+            return orders.push;
         };
         legs.iter()
             .take(*count as usize)
@@ -1199,6 +1319,10 @@ impl OpeningCapture {
                 .map(|entity| (id, entity))
         };
         let tick = sim.session().tick();
+        // The capture waits for the armed force to clear the way.
+        if self.capture_after.is_some_and(|after| tick < after) {
+            return Ok(());
+        }
         // Every named cell is reported, so the receipt shows the whole
         // objective and not only the building the probe is after.
         let cell_observations = cells
@@ -1323,6 +1447,7 @@ impl OpeningCapture {
                     completed: None,
                     start_cell,
                     last_cell: start_cell,
+                    route: vec![(tick, start_cell)],
                     dropped: None,
                     health: Vec::new(),
                     threats: Vec::new(),
@@ -1390,8 +1515,51 @@ impl OpeningCapture {
         let target = sim.entities().get(order.target);
         let engineer = sim.entities().get(order.engineer);
         let mission = engineer.map(|entity| entity.passive_acquire_mission());
+        // The walk's own state: the cell the engineer walks to, the steps
+        // left in its route and the coordinate the building answers as a
+        // navigation goal. They say whether the order kept a goal and
+        // whether the route ran out before it.
+        let walk_goal = engineer.and_then(|entity| {
+            entity
+                .locomotor
+                .as_ref()
+                .and_then(|locomotor| locomotor.walk_destination_cell())
+        });
+        let steps_left = engineer.map(|entity| {
+            entity
+                .navigation
+                .path_replay()
+                .remaining_directions()
+                .len()
+        });
+        let nav_goal = sim
+            .navigation_target_coordinate(
+                crate::sim::components::NavTargetRef::object(order.target),
+                Some(order.engineer),
+                &runtime.resources.rules,
+            )
+            .ok()
+            .map(|coord| {
+                (
+                    (coord.x / 256) as i16 as u16,
+                    (coord.y / 256) as i16 as u16,
+                )
+            });
         if let Some(entity) = engineer {
             order.last_cell = (entity.position.rx(), entity.position.ry());
+            // The walk is the evidence for how the order ended: the route
+            // shows the cells the engineer passed and the threats the
+            // receipt names are the ones next to it when it was hit.
+            if order
+                .route
+                .last()
+                .is_none_or(|&(_, cell)| cell != order.last_cell)
+            {
+                order.route.push((tick, order.last_cell));
+                if order.route.len() > 64 {
+                    order.route.remove(0);
+                }
+            }
             // The engineer's health and the units next to it are the
             // evidence for how the order ended: infantry leave the world
             // at death, so the last reading is what killed them.
@@ -1440,8 +1608,11 @@ impl OpeningCapture {
                 "cell": order.last_cell,
                 "mission": mission.map(|mission| format!("{mission:?}")),
                 "health": order.health.last().map(|&(_, value)| value),
+                "walk_goal": walk_goal.map(|(x, y)| json!([x, y])),
+                "steps_left": steps_left,
             },
             "target": {"id": order.target, "cell": order.cell},
+            "nav_goal": nav_goal.map(|(x, y)| json!([x, y])),
             "target_owner": target.map(|entity| sim.interner().resolve(entity.owner())),
             "capture_mission": in_flight.carrying,
             "waiting": waiting,
@@ -1523,6 +1694,7 @@ impl OpeningCapture {
                     "completed_tick": order.completed,
                     "engineer_start_cell": [order.start_cell.0, order.start_cell.1],
                     "engineer_last_cell": [order.last_cell.0, order.last_cell.1],
+                    "route": order.route.iter().map(|&(tick, cell)| json!({"tick": tick, "cell": [cell.0, cell.1]})).collect::<Vec<_>>(),
                     "dropped": order.dropped,
                     "health": order.health.iter().map(|&(tick, value)| json!({"tick": tick, "value": value})).collect::<Vec<_>>(),
                     "threats": order.threats,
@@ -1539,7 +1711,11 @@ impl OpeningCapture {
             receipt["capture_probe"] = probe.clone();
         }
         if let OpeningTarget::TriggerTrace {
-            legs: Some((legs, count)),
+            orders:
+                TraceOrders {
+                    legs: Some((legs, count)),
+                    ..
+                },
             ..
         } = &self.target
         {
@@ -1556,7 +1732,10 @@ impl OpeningCapture {
         if matches!(
             self.target,
             OpeningTarget::TriggerTrace {
-                capture: Some(_),
+                orders: TraceOrders {
+                    capture: Some(_),
+                    ..
+                },
                 ..
             }
         ) {
@@ -2045,9 +2224,7 @@ mod tests {
         OpeningTarget::TriggerTrace {
             scenario: "ALL01UMD",
             tick: 900,
-            push: None,
-            capture: None,
-            legs: None,
+            orders: TraceOrders::default(),
         }
     }
 
@@ -2102,9 +2279,10 @@ mod tests {
         let target = OpeningTarget::TriggerTrace {
             scenario: "ALL03UMD",
             tick: 1800,
-            push: None,
-            capture: None,
-            legs: Some((legs, 2)),
+            orders: TraceOrders {
+                legs: Some((legs, 2)),
+                ..TraceOrders::default()
+            },
         };
         // Before the first leg no order goes out.
         assert_eq!(OpeningCapture::destination_for(&target, 299), None);
@@ -2125,9 +2303,10 @@ mod tests {
         let push = OpeningTarget::TriggerTrace {
             scenario: "ALL01UMD",
             tick: 900,
-            push: Some((112, 120)),
-            capture: None,
-            legs: None,
+            orders: TraceOrders {
+                push: Some((112, 120)),
+                ..TraceOrders::default()
+            },
         };
         assert_eq!(OpeningCapture::destination_for(&push, 1), Some((112, 120)));
     }

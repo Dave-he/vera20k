@@ -28,7 +28,7 @@ mod score;
 mod skirmish;
 pub(crate) use skirmish::PresentedShell;
 
-use movies::{MAX_TRACE_CAPTURE_CELLS, MAX_TRACE_LEGS, TraceCaptureCells, TraceLegs};
+use movies::{MAX_TRACE_CAPTURE_CELLS, MAX_TRACE_LEGS, TraceCaptureCells, TraceLegs, TraceOrders};
 
 pub(crate) const CAPTURE_FLAG: &str = "--shell-capture";
 const CHECKPOINT_MAIN_MENU_0XE2_STEADY: &str = "main-menu-0xe2-steady";
@@ -479,7 +479,7 @@ impl ShellCaptureCheckpoint {
                 .iter()
                 .find(|name| name.strip_suffix(".MAP").unwrap().eq_ignore_ascii_case(map))
                 .with_context(|| format!("{map:?} is not a retail campaign map"))?;
-            let (tick, push, capture, legs) = split_trace_segments(tick)?;
+            let (tick, orders) = split_trace_segments(tick)?;
             let tick: u64 = tick
                 .parse()
                 .context("trigger trace tick is not an integer")?;
@@ -490,9 +490,7 @@ impl ShellCaptureCheckpoint {
             return Ok(Self::CampaignOpening(movies::OpeningTarget::TriggerTrace {
                 scenario,
                 tick,
-                push,
-                capture,
-                legs,
+                orders,
             }));
         }
         if let Some(tick) = value.strip_prefix("campaign-sov02-fortresses-tick-") {
@@ -2027,68 +2025,74 @@ fn parse_u32(value: String, flag: &str) -> Result<u32> {
         .with_context(|| format!("{flag} requires an unsigned integer, got {value:?}"))
 }
 
-/// Read the `-push-<X>-<Y>` cell, the `-capture-<X>-<Y>[,<X>-<Y>...]` cell
-/// list and the `-legs-<tick>-<X>-<Y>[,<tick>-<X>-<Y>...]` leg list of a
-/// trigger trace checkpoint. The segments may come in any order. Push names
-/// the units' attack-move destination. Capture names the building cells to
-/// attempt in order as engineers become available. Legs name the cells the
-/// units attack toward in turn, each from its own tick.
-fn split_trace_segments(
-    value: &str,
-) -> Result<(
-    &str,
-    Option<(u16, u16)>,
-    Option<(TraceCaptureCells, u8)>,
-    Option<(TraceLegs, u8)>,
-)> {
+/// Read the player orders of a trigger trace checkpoint. The checkpoint names
+/// the `-push-<X>-<Y>` cell, the `-capture-<X>-<Y>[,<X>-<Y>...]` cell list,
+/// the `-legs-<tick>-<X>-<Y>[,<tick>-<X>-<Y>...]` leg list, the
+/// `-train-<TYPE>-<N>[,<TYPE>-<N>...]` unit list and the
+/// `-capture-after-<TICK>` delay. The segments may come in any order.
+fn split_trace_segments(value: &str) -> Result<(&str, TraceOrders)> {
+    // The capture list and the capture delay both start with "-capture-", so
+    // the list is the "-capture-" that is not the start of "-capture-after-".
+    let capture_after_at = value.find("-capture-after-");
+    let capture_at = value
+        .match_indices("-capture-")
+        .map(|(at, _)| at)
+        .find(|at| Some(*at) != capture_after_at);
     let push_at = value.find("-push-");
-    let capture_at = value.find("-capture-");
     let legs_at = value.find("-legs-");
-    let head = match push_at.into_iter().chain(capture_at).chain(legs_at).min() {
+    let train_at = value.find("-train-");
+    let starts = [push_at, capture_at, legs_at, train_at, capture_after_at];
+    let head = match starts.iter().flatten().copied().min() {
         Some(index) => &value[..index],
         None => value,
     };
     // A segment runs to the next segment that starts after it.
     let end_of = |start: usize| {
-        push_at
-            .into_iter()
-            .chain(capture_at)
-            .chain(legs_at)
+        starts
+            .iter()
+            .flatten()
+            .copied()
             .filter(|at| *at > start)
             .min()
             .unwrap_or(value.len())
     };
-    let push = match push_at {
-        Some(index) => {
-            let start = index + "-push-".len();
-            let cell = value
-                .get(start..end_of(index))
-                .context("trigger trace -push cell is missing")?;
-            Some(parse_trace_cell(cell, "-push-")?)
-        }
-        None => None,
-    };
-    let capture = match capture_at {
-        Some(index) => {
-            let start = index + "-capture-".len();
-            let cells = value
-                .get(start..end_of(index))
-                .context("trigger trace -capture cells are missing")?;
-            Some(parse_trace_capture_cells(cells)?)
-        }
-        None => None,
-    };
-    let legs = match legs_at {
-        Some(index) => {
-            let start = index + "-legs-".len();
-            let cells = value
-                .get(start..end_of(index))
-                .context("trigger trace -legs cells are missing")?;
-            Some(parse_trace_legs(cells)?)
-        }
-        None => None,
-    };
-    Ok((head, push, capture, legs))
+    let mut orders = TraceOrders::default();
+    if let Some(index) = push_at {
+        let start = index + "-push-".len();
+        let cell = value
+            .get(start..end_of(index))
+            .context("trigger trace -push cell is missing")?;
+        orders.push = Some(parse_trace_cell(cell, "-push-")?);
+    }
+    if let Some(index) = capture_at {
+        let start = index + "-capture-".len();
+        let cells = value
+            .get(start..end_of(index))
+            .context("trigger trace -capture cells are missing")?;
+        orders.capture = Some(parse_trace_capture_cells(cells)?);
+    }
+    if let Some(index) = legs_at {
+        let start = index + "-legs-".len();
+        let cells = value
+            .get(start..end_of(index))
+            .context("trigger trace -legs cells are missing")?;
+        orders.legs = Some(parse_trace_legs(cells)?);
+    }
+    if let Some(index) = train_at {
+        let start = index + "-train-".len();
+        let list = value
+            .get(start..end_of(index))
+            .context("trigger trace -train list is missing")?;
+        orders.train = parse_trace_train(list)?;
+    }
+    if let Some(index) = capture_after_at {
+        let start = index + "-capture-after-".len();
+        let tick = value
+            .get(start..end_of(index))
+            .context("trigger trace -capture-after tick is missing")?;
+        orders.capture_after = Some(tick.parse().context("trigger trace -capture-after tick")?);
+    }
+    Ok((head, orders))
 }
 
 /// Read the ordered `-legs-<tick>-<X>-<Y>[,<tick>-<X>-<Y>...]` list. The
@@ -2122,6 +2126,29 @@ fn parse_trace_legs(cells: &str) -> Result<(TraceLegs, u8)> {
     ensure!(count > 0, "trigger trace -legs names no leg");
     parsed[..count].sort_by_key(|(at, _)| *at);
     Ok((parsed, count as u8))
+}
+
+/// Read the ordered `-train-<TYPE>-<N>[,<TYPE>-<N>...]` unit list.
+fn parse_trace_train(list: &str) -> Result<movies::TraceTrain> {
+    let mut train = movies::TraceTrain::default();
+    for entry in list.split(',') {
+        let (type_id, count) = entry
+            .rsplit_once('-')
+            .context("trigger trace -train entries are <TYPE>-<N>")?;
+        let count: u32 = count
+            .parse()
+            .context("trigger trace -train count is not an integer")?;
+        ensure!(count > 0, "trigger trace -train count must be positive");
+        let name = movies::TraceTypeName::new(type_id)
+            .context("trigger trace -train type name is too long")?;
+        ensure!(
+            train.push(name, count),
+            "trigger trace -train names at most {} types",
+            movies::MAX_TRACE_TRAIN
+        );
+    }
+    ensure!(train.count() > 0, "trigger trace -train names no unit");
+    Ok(train)
 }
 
 /// Read one `<X>-<Y>` cell of a trigger trace checkpoint.
@@ -4508,42 +4535,43 @@ mod tests {
             (0, (0, 0)),
         ];
         assert_eq!(movies::MAX_TRACE_LEGS, leg_cells.len());
-        for (name, side, scenario, tick, push, capture, legs) in [
+        let mut train_cells = movies::TraceTrain::default();
+        assert!(train_cells.push(movies::TraceTypeName::new("ENGINEER").unwrap(), 6));
+        for (name, side, scenario, tick, orders) in [
             (
                 "campaign-trigger-trace-all04dmd-tick-9000",
                 CampaignSide::Allied,
                 "ALL04DMD.MAP",
                 9000,
-                None,
-                None,
-                None,
+                movies::TraceOrders::default(),
             ),
             (
                 "campaign-trigger-trace-SOV07TMD-tick-1",
                 CampaignSide::Soviet,
                 "SOV07TMD.MAP",
                 1,
-                None,
-                None,
-                None,
+                movies::TraceOrders::default(),
             ),
             (
                 "campaign-trigger-trace-ALL02UMD-tick-18000-push-83-88",
                 CampaignSide::Allied,
                 "ALL02UMD.MAP",
                 18000,
-                Some((83, 88)),
-                None,
-                None,
+                movies::TraceOrders {
+                    push: Some((83, 88)),
+                    ..movies::TraceOrders::default()
+                },
             ),
             (
                 "campaign-trigger-trace-ALL01UMD-tick-18000-push-125-83-capture-125-83,130-129",
                 CampaignSide::Allied,
                 "ALL01UMD.MAP",
                 18000,
-                Some((125, 83)),
-                Some((capture_cells, 2)),
-                None,
+                movies::TraceOrders {
+                    push: Some((125, 83)),
+                    capture: Some((capture_cells, 2)),
+                    ..movies::TraceOrders::default()
+                },
             ),
             (
                 // The two segments may come in either order.
@@ -4551,9 +4579,11 @@ mod tests {
                 CampaignSide::Allied,
                 "ALL01UMD.MAP",
                 18000,
-                Some((91, 105)),
-                Some((capture_cells, 2)),
-                None,
+                movies::TraceOrders {
+                    push: Some((91, 105)),
+                    capture: Some((capture_cells, 2)),
+                    ..movies::TraceOrders::default()
+                },
             ),
             (
                 // The legs keep the tick order, whatever order they are named in.
@@ -4561,17 +4591,28 @@ mod tests {
                 CampaignSide::Allied,
                 "ALL03UMD.MAP",
                 18000,
-                None,
-                None,
-                Some((leg_cells, 2)),
+                movies::TraceOrders {
+                    legs: Some((leg_cells, 2)),
+                    ..movies::TraceOrders::default()
+                },
+            ),
+            (
+                // The trains and the capture delay are player orders too.
+                "campaign-trigger-trace-ALL01UMD-tick-18000-train-ENGINEER-6-capture-after-9000",
+                CampaignSide::Allied,
+                "ALL01UMD.MAP",
+                18000,
+                movies::TraceOrders {
+                    train: train_cells,
+                    capture_after: Some(9000),
+                    ..movies::TraceOrders::default()
+                },
             ),
         ] {
             let target = movies::OpeningTarget::TriggerTrace {
                 scenario,
                 tick,
-                push,
-                capture,
-                legs,
+                orders,
             };
             assert_eq!(
                 ShellCaptureCheckpoint::parse(name).unwrap().movies_target(),
@@ -4596,6 +4637,11 @@ mod tests {
             "campaign-trigger-trace-ALL01UMD-tick-100-legs-100-1",
             "campaign-trigger-trace-ALL01UMD-tick-100-legs-100-1-1,200-2-2,300-3-3,400-4-4,500-5-5,600-6-6,700-7-7,800-8-8,900-9-9",
             "campaign-trigger-trace-ALL01UMD-tick-100-capture-push-1-1",
+            "campaign-trigger-trace-ALL01UMD-tick-100-train-ENGINEER",
+            "campaign-trigger-trace-ALL01UMD-tick-100-train-ENGINEER-0",
+            "campaign-trigger-trace-ALL01UMD-tick-100-train-ENGINEER-many",
+            "campaign-trigger-trace-ALL01UMD-tick-100-train-A-VERY-LONG-UNIT-TYPE-NAME-1",
+            "campaign-trigger-trace-ALL01UMD-tick-100-capture-after-abc",
         ] {
             assert!(ShellCaptureCheckpoint::parse(invalid).is_err());
         }
@@ -4621,9 +4667,10 @@ mod tests {
                 target: movies::CampaignStartTarget::Opening(movies::OpeningTarget::TriggerTrace {
                     scenario: "ALL01UMD.MAP",
                     tick: 100,
-                    push: None,
-                    capture: Some((eight, 8)),
-                    legs: None,
+                    orders: movies::TraceOrders {
+                        capture: Some((eight, 8)),
+                        ..movies::TraceOrders::default()
+                    },
                 },),
             })
         );
