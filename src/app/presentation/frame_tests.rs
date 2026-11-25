@@ -188,6 +188,9 @@ fn an_shp_body_reads_primary_facing_through_the_games_current() {
         [RuleSet::empty_for_test(), &ares]
             .map(|rules| ObjectRecord::of_test_in(&entity, None, rules).shp_body_facing),
         [0x3FFC, 0x4000]
+    );
+}
+
 /// A frame answers the screen questions for the objects the view reaches,
 /// and keeps the radar facts for every object.
 #[test]

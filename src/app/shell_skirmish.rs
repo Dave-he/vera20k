@@ -519,31 +519,50 @@ impl App {
         }
     }
 
+    /// Start's validation message for `err`: what the player is told when
+    /// the launch cannot start. `None` when the error carries no message of
+    /// its own, and the failure stays in the log.
+    fn skirmish_validation_message(
+        csf: Option<&crate::assets::csf_file::CsfFile>,
+        err: &crate::skirmish_launch::LaunchValidationError,
+    ) -> Option<String> {
+        use crate::skirmish_launch::LaunchValidationError as Error;
+        Some(match err {
+            Error::MapCapacityExceeded { capacity, .. } => crate::i18n::label(
+                csf,
+                "TXT_SCENARIO_TOO_SMALL",
+                "This map has a %d player max. The max includes human and computer players.",
+            )
+            .replace("%d", &capacity.to_string()),
+            Error::NoEnabledOpponent => crate::i18n::label(
+                csf,
+                "TXT_NEED_AT_LEAST_TWO_PLAYERS",
+                "You need at least two players to start the game!",
+            ),
+            Error::SameExplicitTeam { .. } => crate::i18n::label(
+                csf,
+                "TXT_CANNOT_ALLY",
+                "Must have more than one team to start a game!",
+            ),
+            // VERA: map archives are optional, so the list can be empty.
+            Error::NoSelectedMap => crate::i18n::tr("VERA:NoMapsFound"),
+            // VERA: the mode roster comes from the game's MPModesMD.INI, which
+            // may be missing or unusable; Start Game then says so.
+            Error::NoSelectedMode { .. } => crate::i18n::tr("VERA:NoModesFound"),
+            _ => return None,
+        })
+    }
+
     /// Start's validation box `0xCE` for `err`, which takes the name edit's
     /// focus.
     fn show_skirmish_validation_box(
         state: &mut AppState,
         err: &crate::skirmish_launch::LaunchValidationError,
     ) {
-        use crate::skirmish_launch::LaunchValidationError as Error;
-        let message = match err {
-            Error::MapCapacityExceeded { capacity, .. } => state
-                .csf_label(
-                    "TXT_SCENARIO_TOO_SMALL",
-                    "This map has a %d player max. The max includes human and computer players.",
-                )
-                .replace("%d", &capacity.to_string()),
-            Error::NoEnabledOpponent => state.csf_label(
-                "TXT_NEED_AT_LEAST_TWO_PLAYERS",
-                "You need at least two players to start the game!",
-            ),
-            Error::SameExplicitTeam { .. } => state.csf_label(
-                "TXT_CANNOT_ALLY",
-                "Must have more than one team to start a game!",
-            ),
-            // VERA: map archives are optional, so the list can be empty.
-            Error::NoSelectedMap => crate::i18n::tr("VERA:NoMapsFound"),
-            _ => return log::warn!("Could not start skirmish shell session: {err:?}"),
+        let Some(message) =
+            Self::skirmish_validation_message(state.process_assets.csf.as_ref(), err)
+        else {
+            return log::warn!("Could not start skirmish shell session: {err:?}");
         };
         let ok = state.csf_label("TXT_OK", "OK");
         let shell = &mut state.frontend.skirmish_shell_state;
@@ -571,8 +590,7 @@ impl App {
         selected_mode_id: i32,
         current_record_index: Option<usize>,
     ) {
-        (state.frontend.skirmish_shell_state.statics)
-            .hover("", crate::util::time::Instant::now());
+        (state.frontend.skirmish_shell_state.statics).hover("", crate::util::time::Instant::now());
         // A fresh `0x6B`: its widgets build on the first sync.
         crate::ui::skirmish_shell::choose_map_page::close(&mut state.frontend.shell_controller);
         // VeraX: the game's data turns the Skirmish map hot reload on, so a
@@ -580,12 +598,11 @@ impl App {
         // keeps its launch snapshot, because the map list is local and peers
         // must still compare the same catalog.
         let network_setup = state.frontend.shell_route == ShellRoute::NetworkSetup;
-        let current_record_index =
-            if Self::verax_map_reload(state.rules(), network_setup) {
-                Self::reload_skirmish_catalog(state, current_record_index)
-            } else {
-                current_record_index
-            };
+        let current_record_index = if Self::verax_map_reload(state.rules(), network_setup) {
+            Self::reload_skirmish_catalog(state, current_record_index)
+        } else {
+            current_record_index
+        };
         let layout = crate::app::frontend::shell_layout::choose_map_layout(state);
         let session = &state.match_state.session;
         let context = if network_setup {
@@ -1622,7 +1639,6 @@ impl App {
 
 #[cfg(all(test, tests_app))]
 mod tests {
-    #[cfg(feature = "verax")]
     use super::*;
 
     /// A loose map the chooser lists: the retail `.yrm` branch reads
@@ -1763,9 +1779,9 @@ mod tests {
             error,
             crate::skirmish_launch::LaunchValidationError::NoSelectedMode { .. }
         ));
-        let modal = App::skirmish_validation_modal_for_error(None, &error)
+        let message = App::skirmish_validation_message(None, &error)
             .expect("the start must say what is missing");
-        assert_eq!(modal.message, crate::i18n::tr("VERA:NoModesFound"));
-        assert!(!modal.message.contains("MISSING"), "{}", modal.message);
+        assert_eq!(message, crate::i18n::tr("VERA:NoModesFound"));
+        assert!(!message.contains("MISSING"), "{message}");
     }
 }

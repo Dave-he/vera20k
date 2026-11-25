@@ -123,7 +123,7 @@ fn assert_shp_light(runtime: &mut SimRuntime, id: u64, light: &CellLightGrid, ex
             .shared_cell_dummy()
             .snapshot(),
     );
-    let frame = PresentationFrame::capture(runtime, &Default::default(), false);
+    let frame = PresentationFrame::capture(runtime, &Default::default(), false, None);
     frame.display_order(sim);
     let viewer = sim.session().current_house();
     let presentation = runtime.presentation_copy(viewer, None);
@@ -194,17 +194,6 @@ fn assert_shp_light_on_frame(
     let colors =
         crate::map::houses::HouseColorMap::from([(owner_name.to_owned(), HouseColorIndex(0))]);
     let mut draws = PlannedObjects::default();
-        crate::map::houses::HouseColorMap::from([(owner_name.clone(), HouseColorIndex(0))]);
-    let location = crate::sim::movement::ground_pose::object_location(actor, Some(terrain));
-    let screen =
-        crate::util::lepton::absolute_leptons_to_screen(location.x, location.y, location.z);
-    let frame = crate::app::presentation::frame::PresentationFrame::capture(
-        runtime,
-        &Default::default(),
-        false,
-        None,
-    );
-    let mut draws = Vec::new();
     build_shp_instances_from_inputs(
         &ShpInputs {
             runtime,

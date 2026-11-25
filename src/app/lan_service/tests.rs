@@ -1584,7 +1584,7 @@ fn loading_survivor_connections_handoff_the_original_majority_certificate() {
 #[test]
 fn a_guest_start_pick_above_the_old_window_reaches_the_room() {
     let launch = launch();
-    let old = launch.humans[1].slot;
+    let old = launch.humans[1].slot.clone();
     let (choices, observer) = picks::decoded_player_choices(b"-2,6,45,-2", &old).unwrap();
     assert!(!observer);
     assert_eq!(
@@ -1604,7 +1604,7 @@ fn a_guest_start_pick_above_the_old_window_reaches_the_room() {
 #[test]
 fn a_team_pick_above_the_domain_is_refused_not_truncated() {
     let launch = launch();
-    let old = launch.humans[1].slot;
+    let old = launch.humans[1].slot.clone();
     assert!(picks::decoded_player_choices(b"-2,6,-2,256", &old).is_err());
     assert!(picks::decoded_pick(&old, -2, 6, -2, 256).is_err());
 }
