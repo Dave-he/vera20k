@@ -77,8 +77,7 @@ pub(super) fn commit_web_burst(
                     continue;
                 };
                 let cell = crate::map::cell_index::NativeCellIdentity::Real(index);
-                coord.z = crate::sim::movement::ground_pose::query_ground_height(&cells, coord)
-                    .unwrap_or(0);
+                coord.z = crate::sim::movement::ground_pose::query_ground_height(&cells, coord);
                 if coord.z.wrapping_sub(detonation.impact.z).wrapping_abs() >= z_band {
                     deck = true;
                     if cells.flags(cell) & crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL != 0 {

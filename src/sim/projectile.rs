@@ -3503,6 +3503,7 @@ mod tests {
                 crate::rules::locomotor_type::SpeedType::Track,
                 (9 * 256 + 128, 10 * 256 + 128),
                 (10, 10),
+                [false; 2],
                 None,
                 grid,
                 &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
