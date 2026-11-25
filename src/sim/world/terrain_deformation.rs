@@ -28,9 +28,6 @@ use crate::sim::world::{FrameEffects, Simulation};
 use crate::util::direction::DIRECTION_DELTAS;
 use crate::util::lepton::BRIDGE_DECK_HEIGHT_LEPTONS;
 
-/// TS `LEVEL_LEPTON_H`: one level in leptons, the close-to-ground tolerance.
-const LEVEL_LEPTONS: i32 = 104;
-
 /// Cells from a dent's cell to the edge of the corners Firestorm reads and
 /// rewrites for it: the cell ±14 (Firestorm 2.0 0x5F8500, 0x5F8D30).
 const DENT_WINDOW: i32 = 14;
@@ -233,21 +230,6 @@ impl Simulation {
         effects: &mut FrameEffects<'_>,
     ) {
         if !rules.combat_damage.terrain_deformation || damage <= warhead.deform_threshold {
-            return;
-        }
-        let ground = self.resolved_terrain.as_ref().and_then(|terrain| {
-            let cell = terrain.cell(cell.0, cell.1)?;
-            Some(crate::util::lepton::ground_height_leptons_clamped(
-                cell.level,
-                cell.slope_type,
-                impact.x,
-                impact.y,
-            ))
-        });
-        let Some(ground) = ground else {
-            return;
-        };
-        if (impact.z - ground).abs() >= LEVEL_LEPTONS {
             return;
         }
         // IEEE double arithmetic, as TS's percent; `as` truncates like ftol.
