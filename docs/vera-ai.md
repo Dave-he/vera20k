@@ -26,6 +26,12 @@ A mod's `rulesmd.ini`, a map, or a scenario may carry the section. In an
 online game every player needs the same rules, which the rules compatibility
 check compares.
 
+The effective values enter the replay and save rules hash
+(`RuleSet::simulation_config_hash`), so a replay or save written by a build
+that read the same rules without the section is refused rather than replayed
+against a different computer player. With the section absent, as in a retail
+game, the hash is the same as it was before.
+
 ## What it changes
 
 The stock computer player is the rule of the game: it is a faithful port of

@@ -83,7 +83,11 @@ Players on one build reach the same answer. Older builds, including those that
 load an installed `ares.mix` with No mod selected, are refused by the existing
 build check. A rollback restores that build's earlier selection and INI reading.
 Ares needs no build feature; the retired `ares` feature's `false` is kept only in the
-replay and save rules hash (`RuleSet::simulation_config_hash`).
+replay and save rules hash (`RuleSet::simulation_config_hash`). The same hash
+also carries the effective VERA computer-player policy when a game enables it
+([VERA's own computer player](vera-ai.md)) and the delayed-death timing a
+warhead's overflowing `DelayKillAtMax` produces, so a replay or save written
+by a build that read the same rules differently is refused.
 Whether Phobos plays is decided from the same rules, mode and map
 ([the Phobos switch](phobos.md#the-phobos-switch)) and adds nothing to the
 digest, so players on one build reach the same answer; older builds are refused
