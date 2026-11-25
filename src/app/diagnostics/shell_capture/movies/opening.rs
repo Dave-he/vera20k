@@ -606,9 +606,6 @@ impl OpeningCapture {
             }
         }
         self.observe(state)?;
-        if let OpeningTarget::TriggerTrace { .. } = self.target {
-            self.request_film_frames(state)?;
-        }
         if let OpeningTarget::TriggerTrace {
             orders: TraceOrders {
                 capture: Some(_), ..
@@ -649,6 +646,11 @@ impl OpeningCapture {
         // exact state that was drawn, including the first unlocked frame.
         if self.ready(state)? {
             return Ok(());
+        }
+        // The screenshot request is consumed on the next render. A terminal
+        // trace already has its own readback and will exit before that render.
+        if let OpeningTarget::TriggerTrace { .. } = self.target {
+            self.request_film_frames(state)?;
         }
         if self.target == OpeningTarget::RealtimeUnlocked {
             return Ok(());

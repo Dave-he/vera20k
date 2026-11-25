@@ -86,8 +86,9 @@ Ares needs no build feature; the retired `ares` feature's `false` is kept only i
 replay and save rules hash (`RuleSet::simulation_config_hash`). The same hash
 also carries the effective VERA computer-player policy when a game enables it
 ([VERA's own computer player](vera-ai.md)) and the delayed-death timing a
-warhead's overflowing `DelayKillAtMax` produces, so a replay or save written
-by a build that read the same rules differently is refused.
+warhead's overflowing `DelayKillAtMax` produces. Replays and direct save loads
+check a recorded rules digest when it is nonzero. Save conversion clears that
+digest and loads with the current game's rules and assets.
 Whether Phobos plays is decided from the same rules, mode and map
 ([the Phobos switch](phobos.md#the-phobos-switch)) and adds nothing to the
 digest, so players on one build reach the same answer; older builds are refused

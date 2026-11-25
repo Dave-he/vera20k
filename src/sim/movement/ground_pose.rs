@@ -161,8 +161,8 @@ impl Position {
     /// Without resolved terrain, the headless movement hosts that pass their
     /// PathGrid take the cell's level and slope from it. Otherwise (mapless
     /// fixtures) every lookup would be the Dummy cell, whose constructor ground is
-    /// flat level 0. A slope byte outside the native table reads as flat ground
-    /// at the cell's level.
+    /// flat level 0. VERA treats a slope byte outside the native table as flat
+    /// ground at the cell's level.
     pub(crate) fn set_height(
         &mut self,
         on_bridge: bool,

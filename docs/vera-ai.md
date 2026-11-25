@@ -27,10 +27,10 @@ online game every player needs the same rules, which the rules compatibility
 check compares.
 
 The effective values enter the replay and save rules hash
-(`RuleSet::simulation_config_hash`), so a replay or save written by a build
-that read the same rules without the section is refused rather than replayed
-against a different computer player. With the section absent, as in a retail
-game, the hash is the same as it was before.
+(`RuleSet::simulation_config_hash`). Replays and direct save loads that carry
+a nonzero digest require it to match the current rules. Converting a supported
+older save clears its digest and uses the current game's rules. With the section
+absent, as in a retail game, the hash is the same as it was before.
 
 ## What it changes
 
