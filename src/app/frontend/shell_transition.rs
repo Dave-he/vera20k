@@ -526,6 +526,10 @@ pub(crate) fn blocks_shell_input(state: &AppState) -> bool {
     }
     state.frontend.quit_cascade.is_some()
         || shell_slide_running(state)
+        // The score may open between input events. Gate Continue until its
+        // first paint hands ownership to the blocking slide (0x006071E0).
+        || (state.frontend.shell_slide_active_shell != Some(ShellSlideKind::CampaignScore)
+            && current_shell_slide_target(state) == Some(ShellSlideKind::CampaignScore))
         || external_menu_wait(state).is_some()
 }
 
