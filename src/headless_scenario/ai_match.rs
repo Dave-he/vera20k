@@ -6,9 +6,8 @@
 //! and the trainer's numbers mean what the evaluator's numbers mean.
 //!
 //! The match runs on the lockstep route, because the decision of who won
-//! lives there: `Simulation::network_match_winners` answers only for a
-//! lockstep session. Every house is a computer house, so the match ends when
-//! one side is left standing.
+//! lives there. Every house is a computer house, so the match ends when one
+//! side is left standing ([`one_side_left`]).
 //!
 //! The rules are the retail ones. A run may replace VERA's own computer-player
 //! policy with one the caller holds, which is how the trainer tries a set of
@@ -231,6 +230,11 @@ pub fn play_ai_match(
 
 /// Load the match's world: the retail map, the computer houses, and the
 /// policy the request holds.
+///
+/// The world takes the handoff a real match's start takes
+/// ([`crate::sim::world::Simulation::begin_match_handoff`]), so the trainer
+/// measures the game's draws: every object's turn draws from its own stream
+/// ([`crate::sim::world::turn_streams`]), not from the shared one.
 fn load(retail_dir: &Path, request: &AiMatchRequest) -> Result<HeadlessScenario, String> {
     let mut scenario =
         headless_scenario::load_session(retail_dir, &request.map, request.seed, session(request))?;
@@ -239,9 +243,7 @@ fn load(retail_dir: &Path, request: &AiMatchRequest) -> Result<HeadlessScenario,
         .resources_mut()
         .rules
         .set_vera_ai(request.policy);
-    let simulation = &mut scenario.runtime.simulation;
-    simulation.batch_path_searches();
-    simulation.batch_target_scans();
+    scenario.runtime.simulation.begin_match_handoff();
     Ok(scenario)
 }
 
@@ -360,3 +362,7 @@ fn run(
 pub fn vera_house_name(outcome: &AiMatchOutcome) -> Option<&str> {
     outcome.houses.first().map(String::as_str)
 }
+
+#[cfg(all(test, tests_scenario))]
+#[path = "ai_match_tests.rs"]
+mod tests;
