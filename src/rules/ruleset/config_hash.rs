@@ -23,6 +23,36 @@ impl RuleSet {
         // v34: Country starting-veterancy; optional extensions add domains below.
         b"rules-simulation-config-v34".hash(&mut hasher);
         self.source_ini_hash.hash(&mut hasher);
+        // The effective policy may differ from the INI, and older builds
+        // could read the same INI text without playing [VeraAI].
+        let policy = self.vera_ai();
+        if policy.enabled {
+            b"vera-ai-policy-v1".hash(&mut hasher);
+            policy.max_houses.hash(&mut hasher);
+            policy.decision_period.hash(&mut hasher);
+            policy.attack_threshold.hash(&mut hasher);
+            policy.home_guard.hash(&mut hasher);
+            policy.attack_waves.hash(&mut hasher);
+            policy.opening_delay.hash(&mut hasher);
+            policy.target_production.hash(&mut hasher);
+            [
+                (policy.infantry_weight.to_bits(), policy.infantry_period),
+                (policy.vehicle_weight.to_bits(), policy.vehicle_period),
+                (policy.aircraft_weight.to_bits(), policy.aircraft_period),
+            ]
+            .hash(&mut hasher);
+        }
+        // Earlier fork builds refused an overflowing DelayKillAtMax at the
+        // reader. The masked PostMortem conversion now takes a zero-frame
+        // fuse for that input (0x00701ED0); identical INI text could replay
+        // differently. Retail warheads never enter this domain.
+        if self
+            .warhead_types
+            .iter()
+            .any(|warhead| warhead.causes_delay_kill && !warhead.delay_kill_at_max_f64.is_finite())
+        {
+            b"postmortem-overflow-timing-v1".hash(&mut hasher);
+        }
         // Eager and authored loads recover the same deck, including wooden rims.
         b"independent-high-bridge-deck-v6".hash(&mut hasher);
         // A previous scenario's list survives RulesClass's Type reset even
@@ -131,6 +161,25 @@ impl RuleSet {
             theft_flags.sort_unstable();
             b"infantry-theft-flags-v1".hash(&mut hasher);
             theft_flags.hash(&mut hasher);
+        }
+        // Firestorm's web keys (docs/ts-webs.md) keep their values across
+        // passes (WarheadWeb::read_pass), as the theft bytes do. Left out
+        // while no rules set them.
+        let webs = Self::by_upper_id(
+            self.warhead_entries()
+                .filter_map(|(id, warhead)| warhead.web.map(|web| (id, web))),
+        );
+        let web_immune = Self::by_upper_id(
+            self.object_list
+                .iter()
+                .filter(|object| object.is_web_immune)
+                .map(|object| (&object.id, object.category)),
+        );
+        if !webs.is_empty() || !web_immune.is_empty() || self.general.webbed_infantry.is_some() {
+            b"ts-webs-v1".hash(&mut hasher);
+            webs.hash(&mut hasher);
+            web_immune.hash(&mut hasher);
+            self.general.webbed_infantry.hash(&mut hasher);
         }
         // OverlayRead5FE8BE / InitTheater5FE620 retain typed history that a
         // flattened Image key cannot recover; saved resource plans matter too.
@@ -247,6 +296,18 @@ impl RuleSet {
         {
             b"phobos-super-availability-v1".hash(&mut hasher);
             self.phobos_super_weapon_metadata.hash(&mut hasher);
+        }
+        if self.kratos {
+            b"kratos-infantry-flh-v1".hash(&mut hasher);
+            Self::by_upper_id(
+                self.object_list
+                    .iter()
+                    .filter(|object| {
+                        object.category == ObjectCategory::Infantry && !object.fearless
+                    })
+                    .map(|object| (&object.id, object.kratos_crawling().arrays())),
+            )
+            .hash(&mut hasher);
         }
         if self.phobos {
             self.parallel_ai_queues.hash_into(&mut hasher);

@@ -4,6 +4,45 @@
 use super::*;
 use crate::rules::native_processing::RulesLayerKind;
 
+#[test]
+fn vera_ai_policy_changes_the_rules_hash_only_when_enabled() {
+    let ini = IniFile::from_str(&format!("{}\n[VeraAI]\nEnabled=yes\n", make_test_rules()));
+    let mut rules = RuleSet::from_ini(&ini).unwrap();
+    let enabled = rules.simulation_config_hash();
+    // Change the effective policy while retaining the same source INI hash.
+    let mut policy = *rules.vera_ai();
+    policy.enabled = false;
+    rules.set_vera_ai(policy);
+    let disabled = rules.simulation_config_hash();
+    assert_ne!(enabled, disabled);
+
+    policy.attack_threshold += 1;
+    rules.set_vera_ai(policy);
+    assert_eq!(rules.simulation_config_hash(), disabled);
+    policy.enabled = true;
+    rules.set_vera_ai(policy);
+    assert_ne!(rules.simulation_config_hash(), enabled);
+}
+
+/// Same INI, different PostMortem behavior: older fork builds replaced a
+/// non-finite multiplier with 1.0 at read time (0x00701ED0).
+#[test]
+fn postmortem_overflow_timing_changes_the_rules_hash() {
+    let ini = IniFile::from_str(
+        "[Warheads]\n0=W\n[W]\nCausesDelayKill=yes\nDelayKillFrames=5\nDelayKillAtMax=1e39\n",
+    );
+    let mut rules = RuleSet::from_ini(&ini).unwrap();
+    let native_hash = rules.simulation_config_hash();
+    let warhead = rules
+        .warhead_types
+        .iter_mut()
+        .find(|w| w.id == "W")
+        .unwrap();
+    assert!(!warhead.delay_kill_at_max_f64.is_finite());
+    warhead.delay_kill_at_max_f64 = 1.0;
+    assert_ne!(rules.simulation_config_hash(), native_hash);
+}
+
 /// Build a minimal rules.ini string for testing.
 fn make_test_rules() -> String {
     "\

@@ -98,7 +98,6 @@ fn retail_lifted_vehicles_keep_native_shadow_stencils_on_their_cell_slope() {
                     ..Default::default()
                 },
             )
-            .unwrap()
             .key(type_id);
             assert!(keys.contains(&key), "{key:?} resident");
             let (_, bounds) = model.render(&key, None, None, &mut None).unwrap();

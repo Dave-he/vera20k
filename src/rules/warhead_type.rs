@@ -72,10 +72,6 @@ pub struct WarheadType {
     /// Native binary32 `DelayKillAtMax` widened exactly to f64; default 1.0f.
     /// `WarheadTypeClass+0x138` (ReadDouble at `0x0075d477`, `FSTP float ptr`
     /// at `0x0075d47c`, key string `0x00847e54`).
-    ///
-    /// A value the float parse makes non-finite (`1e39`) is refused by the
-    /// reader that owns the key (`refused_delay_kill_at_max` below), so this
-    /// field is always finite.
     pub delay_kill_at_max_f64: f64,
     /// Whether this warhead can damage walls/bridges (Wall=yes).
     /// The field itself is `WarheadTypeClass+0x144` (ReadINI `0x0075d508`,
@@ -314,6 +310,19 @@ pub struct WarheadType {
     /// for it (`0x00468E9F`). The one stock `EMEffect=yes`, `[EMPuls]`, is
     /// mounted by no stock weapon.
     pub em_effect: bool,
+    /// Tiberian Sun's `LimpetFactor=` (docs/ts-limpets.md): the speed a
+    /// limpeted vehicle loses, in percent. Firestorm 2.0
+    /// `WarheadTypeClass::Read_INI @ 0x0066EE30` reads it on every pass
+    /// (`0x0066F15B..0x0066F19F`) through `INIClass::Get_Double @ 0x004DD970`
+    /// (gamemd's ReadDouble: `35%` is 0.35), defaulted to the current int,
+    /// and truncates it with `__ftol @ 0x006B2020` into WarheadType+0xCC; the
+    /// constructor zeroes it (`0x0066EBA4`). Any nonzero value turns a shot
+    /// into a limpet attach (`sim::limpet`), so `35%` truncates to 0 and
+    /// fires as an ordinary bullet.
+    pub limpet_factor: i32,
+    /// Tiberian Sun Firestorm's web keys (`docs/ts-webs.md`), projected from
+    /// the Rules passes. `None` is the constructor's: not `Webby=`.
+    pub web: Option<WarheadWeb>,
 
     // --- List fields ---
     /// `[VoxelAnims]` type names thrown on detonation.
@@ -415,6 +424,59 @@ pub struct WarheadType {
     /// `SplashList.*`, `CreateAnimsOnZeroDamage`, `Conventional.IgnoreUnits`).
     #[cfg(feature = "phobos")]
     pub phobos_anim: crate::rules::phobos_warhead_anim::PhobosWarheadAnimRules,
+}
+
+/// Tiberian Sun Firestorm's web keys of one warhead (`docs/ts-webs.md`).
+/// gamemd reads none of them; Firestorm 2.0 `WarheadTypeClass::Read_INI`
+/// `0x0066EE30` reads them through `INIClass::Get_Bool` `0x004DE0C0` and
+/// `Get_Int` `0x004DD0C0`, the same readers as gamemd's `ReadBool` and
+/// `ReadInt`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct WarheadWeb {
+    /// `Webby=` (WarheadType `+0xD5`): a detonation webs infantry instead of
+    /// doing area damage.
+    pub webby: bool,
+    /// `WebDuration=` (`+0xC0`), frames.
+    pub duration: i32,
+    /// `WebDurationVariation=` (`+0xC4`), frames either side of the duration.
+    pub duration_variation: i32,
+    /// `WebRadius=` (`+0xC8`), cells.
+    pub radius: i32,
+}
+
+impl WarheadWeb {
+    /// Constructor `0x0066EB10`: `Webby` false (`0x0066EBB6`), `WebDuration`
+    /// 300 (`0x0066EB86`), `WebDurationVariation` 25 (`0x0066EB90`) and
+    /// `WebRadius` 2 (`0x0066EB9A`).
+    pub const CONSTRUCTED: Self = Self {
+        webby: false,
+        duration: 300,
+        duration_variation: 25,
+        radius: 2,
+    };
+
+    /// One Rules pass of `Read_INI` `0x0066F0FE..0x0066F15B`: `Webby` with its
+    /// current value as default, then, only when the value it now holds is
+    /// true (`0x0066F10B`), the three numbers with theirs. `None` stands for
+    /// the constructor's values, so a game without webs keeps no state.
+    pub(crate) fn read_pass(current: Option<Self>, section: &IniSection) -> Option<Self> {
+        let mut web = current.unwrap_or(Self::CONSTRUCTED);
+        web.webby = section.read_bool("Webby", web.webby);
+        if web.webby {
+            web.duration = section.read_int("WebDuration", web.duration);
+            web.duration_variation =
+                section.read_int("WebDurationVariation", web.duration_variation);
+            web.radius = section.read_int("WebRadius", web.radius);
+        }
+        (web != Self::CONSTRUCTED).then_some(web)
+    }
+}
+
+impl WarheadType {
+    /// The web keys of a `Webby=` warhead.
+    pub fn webby(&self) -> Option<&WarheadWeb> {
+        self.web.as_ref().filter(|web| web.webby)
+    }
 }
 
 /// Phobos `AEAttachInfoTypeClass` as a warhead carries it: the AE lists a
@@ -607,8 +669,7 @@ impl WarheadType {
         let cell_inset_f32 = section.read_float("CellInset", 0.0);
         let percent_at_max_native = section.read_float("PercentAtMax", 1.0);
         let percent_at_max_f64 = f64::from(percent_at_max_native);
-        let delay_kill_at_max_f64 =
-            refused_delay_kill_at_max(section.read_float("DelayKillAtMax", 1.0));
+        let delay_kill_at_max_f64 = f64::from(section.read_float("DelayKillAtMax", 1.0));
 
         // The IntVector reader (`0x0075DD22` -> `0x00475D70`). Ares 3.0
         // WarheadTypeClass_LoadFromINI_ListLength (1005C080, hook 0x75D660)
@@ -725,6 +786,8 @@ impl WarheadType {
             bomb_disarm: section.read_bool("BombDisarm", false),
             nuke_maker: section.read_bool("NukeMaker", false),
             em_effect: false,
+            limpet_factor: X87Chop53::ftol_f64_low_masked(section.read_double("LimpetFactor", 0.0)),
+            web: None,
 
             // List fields
             debris_types: Vec::new(),
@@ -814,35 +877,6 @@ pub(crate) fn verses_value(token: &str) -> f64 {
         )
     } else {
         parse_leading_f64(token)
-    }
-}
-
-/// The reader's refusal of a non-finite `DelayKillAtMax=`.
-///
-/// `WarheadTypeClass::ReadINI @ 0x0075D3A0` reads the key through
-/// `CCINIClass::ReadDouble @ 0x005283D0` (the call at `0x0075d477`) and
-/// stores the result as the binary32 field `WarheadTypeClass+0x138` (`FSTP
-/// float ptr` at `0x0075d47c`, key string `0x00847e54`). The executed
-/// native receipts (`tools/input_oracle/area_guard.json`) record that store
-/// for `[SA]`, `[SSA]`, `[AP]` and `[GRIZAPE]` with the constructor's 1.0f.
-/// gamemd applies no bound there, so a literal the float scan overflows
-/// (`1e39`) reaches the native field as ±inf.
-///
-/// RESIDUAL: the native consumer keeps that ±inf. The PostMortem
-/// interpolation at `0x00701ED0` runs with the FPU's exceptions masked, so
-/// the infinity reaches `Math__ftol @ 0x007C5F00` as the integer indefinite
-/// (low dword zero) and the post-mortem delay is 0 frames. VERA refuses the
-/// out-of-range literal here, at the reader that owns the key, and keeps the
-/// constructor's 1.0f, so the delayed death keeps the base `DelayKillFrames`.
-/// Trigger: a mod's INI with a `DelayKillAtMax=` the float scan overflows.
-/// Effect: the post-mortem fuse is the base delay instead of native's 0
-/// frames. Frequency: only such a literal; retail's rulesmd authors 7.0 for
-/// `[OilExplosionWH]` alone. Downstream risk: none for retail data.
-fn refused_delay_kill_at_max(value: f32) -> f64 {
-    if value.is_finite() {
-        f64::from(value)
-    } else {
-        1.0
     }
 }
 
@@ -1036,31 +1070,6 @@ mod tests {
         assert_eq!(
             wh.delay_kill_at_max_f64.to_bits(),
             f64::from(7.1_f32).to_bits()
-        );
-    }
-
-    /// `DelayKillAtMax=` (`WarheadTypeClass+0x138`, ReadDouble at
-    /// `0x0075d477`, `FSTP float ptr` at `0x0075d47c`): the reader refuses a
-    /// value the float scan makes non-finite, so the warhead never hands the
-    /// simulation an exceptional multiplier.
-    #[test]
-    fn a_non_finite_delay_kill_at_max_is_refused_at_the_reader() {
-        let read = |value: &str| {
-            let ini = IniFile::from_str(&format!("[W]\nDelayKillAtMax={value}\n"));
-            WarheadType::from_ini_section("W", ini.section("W").unwrap()).delay_kill_at_max_f64
-        };
-        assert_eq!(read("7.0"), 7.0, "the retail [OilExplosionWH] value");
-        assert_eq!(
-            read("3.4028235e38"),
-            f64::from(f32::MAX),
-            "the largest finite binary32 is inside the range"
-        );
-        assert_eq!(read("3.5e38"), 1.0, "one past the finite range is refused");
-        assert_eq!(read("1e39"), 1.0, "the overflow literal is refused");
-        assert_eq!(
-            refused_delay_kill_at_max(f32::NAN),
-            1.0,
-            "a NaN multiplier is refused too"
         );
     }
 

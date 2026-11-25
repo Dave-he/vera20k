@@ -94,7 +94,7 @@ fn admit_room_setup(
     let host = state.match_state.session.host();
     // VERA: Quick Match plays the original game, whatever rules its host
     // sends.
-    if !host && super::lobby::quick_match_runner(state) {
+    if !host && super::lobby::quick_match_runner(state.frontend.wol.as_ref()) {
         options.launch.options.host_rules = Default::default();
     }
     let events = if host {
@@ -107,7 +107,10 @@ fn admit_room_setup(
     // The room's agreement is retired once the options are admitted: a
     // refused admission leaves the readiness it had.
     if changed {
-        crate::app::shell_network_setup::invalidate_network_agreement(state)?;
+        crate::app::shell_network_setup::invalidate_network_agreement(
+            &mut state.frontend.network_setup_protocol,
+            &mut state.match_state.session,
+        )?;
     }
     for event in events {
         crate::app::shell_network_setup::service_event(state, event).inspect_err(|_| {
@@ -129,7 +132,11 @@ fn admit_room_setup(
     // The owner is ready without a guest Accept button, but still proves its
     // own local map and rules to the same server admission gate.
     let agreement = local_agreement(state, revision)?;
-    let status = local_map_status(state, room);
+    let status = local_map_status(
+        &state.match_state.session,
+        state.frontend.wol.as_ref(),
+        room,
+    );
     Ok(OptionsAdmission {
         agreement,
         status,
@@ -212,7 +219,7 @@ pub(super) fn apply_event(
             }
             let grant = decode_relay_grant(&renewed.relay, &renewed.match_id, &service.player_id)?;
             crate::app::lan_service::renew_online_relay(
-                state,
+                &mut state.match_state,
                 renewed.relay.address,
                 &grant.ticket,
                 grant.key,
@@ -226,7 +233,7 @@ pub(super) fn apply_event(
                 .context("missing watch match")?
                 .to_owned();
             relay_uuid(&id)?;
-            let awaited = super::lobby::awaits_watch(state, &id);
+            let awaited = super::lobby::awaits_watch(state.frontend.wol.as_ref(), &id);
             if let Err(error) = service.receive_watch_start(&id, awaited, || {
                 let start = prepare_watch(state, decode(payload)?)?;
                 if let Some(lobby) = state
@@ -260,7 +267,7 @@ pub(super) fn apply_event(
             }
             let grant = decode_watch_grant(&renewed.relay, &renewed.match_id)?;
             crate::app::lan_service::renew_online_relay(
-                state,
+                &mut state.match_state,
                 renewed.relay.address,
                 &grant.ticket,
                 grant.key,
@@ -671,7 +678,7 @@ pub(super) fn apply_event(
                 "unadmitted start"
             );
             if !pending.probes_started {
-                crate::app::lan_service::begin_online_latency_probe(state)?;
+                crate::app::lan_service::begin_online_latency_probe(&mut state.match_state)?;
                 pending.probes_started = true;
                 pending.deadline = Instant::now() + service.relay_timeout;
             }
@@ -696,7 +703,7 @@ pub(super) fn apply_event(
             );
             let grant = decode_relay_grant(&timing.relay, &timing.match_id, &service.player_id)?;
             crate::app::lan_service::renew_online_relay(
-                state,
+                &mut state.match_state,
                 timing.relay.address,
                 &grant.ticket,
                 grant.key,
@@ -720,13 +727,16 @@ pub(super) fn apply_event(
                 names.as_deref().unwrap_or_default()
             );
             if service.pending.is_none()
-                && crate::app::shell_network_setup::verify(state).is_none()
+                && crate::app::shell_network_setup::verify(
+                    state.frontend.network_setup_protocol.as_ref(),
+                )
+                .is_none()
                 && state.frontend.network_setup_protocol.is_none()
             {
                 // This game already failed the start and left the room: only
                 // the lobby's names are new.
                 if let Some(names) = names {
-                    crate::app::shell_wol::add_problem_line(state, names);
+                    crate::app::shell_wol::add_problem_line(state.frontend.wol.as_mut(), names);
                 }
                 return Ok(());
             }

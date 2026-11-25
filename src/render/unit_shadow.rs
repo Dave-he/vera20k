@@ -159,8 +159,7 @@ mod tests {
                     ramp: input["slope"].as_u64().unwrap_or(0) as u8,
                     ..Default::default()
                 },
-            )
-            .unwrap();
+            );
             assert_eq!(
                 [result.anchor[0] + 320., result.anchor[1] - 215.],
                 std::array::from_fn::<_, 2, _>(|i| case["anchor"][i].as_i64().unwrap() as f32),

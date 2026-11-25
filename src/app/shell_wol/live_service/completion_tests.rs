@@ -1997,11 +1997,11 @@ fn guest_session(
     session
 }
 
-
 /// The host's options as the cooperative room published them.
 fn cooperative_options() -> wire::Options {
     serde_json::from_value(
-        crate::test_fixture::json("tests/fixtures/lobby/options.json")["rooms"]["cooperative"].clone(),
+        crate::test_fixture::json("tests/fixtures/lobby/options.json")["rooms"]["cooperative"]
+            .clone(),
     )
     .unwrap()
 }
@@ -2081,7 +2081,10 @@ fn a_refused_admission_leaves_the_session_as_it_was() {
     let mut launch = options.launch.clone();
     launch.local_player_index = 1;
     let mut session = guest_session(launch);
-    let error = events::admit_roster(&mut session, options, "Player1").unwrap_err();
+    let error = match events::admit_roster(&mut session, options, "Player1") {
+        Ok(_) => panic!("the roster was admitted"),
+        Err(error) => error,
+    };
     assert!(
         error.to_string().contains("Co-op"),
         "the refusal names the stock Co-op data: {error:#}"

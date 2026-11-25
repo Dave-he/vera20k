@@ -22,6 +22,36 @@ const BRIDGE_DECK_AND_FLY_SPIN: u32 = 0xCADF_6067;
 // hook 0x0050114D). Older worlds hold none: their Houses convert with it
 // unset and keep their country's answer, as they played when saved.
 const HOUSE_DEGRADES: u32 = 0xD6C7_5D57;
+// The Firestorm ice chain (docs/ts-ice.md) stores its Scenario growth timer,
+// its solidify list and each unit's ice-sinking flag. Older worlds ran no
+// ice: no timer, no cracks and no unit sinking through ice.
+const TS_ICE: u32 = 0xAFC7_F643;
+// The next writer stores terrain deformation's pending second dent step.
+// Older worlds have none pending.
+const TERRAIN_DENT: u32 = 0x82C3_2EA4;
+// Each object stores the Tiberian Sun limpets on it (`sim::limpet`) in its
+// seldom part, and its foot speed a byte saying so. Older worlds hold none:
+// only a `LimpetFactor=` warhead, which no older writer read, attaches one.
+const TS_LIMPETS: u32 = 0xF612_7DC1;
+// Tiberian Sun's BounceSound and ExpireSound: each saved AnimType's
+// references gain both names. Older worlds had neither, which reads as None
+// and plays nothing (docs/ts-anim-sounds.md).
+const TS_ANIM_SOUNDS: u32 = 0x9441_E8D8;
+// Older writers stored neither Kratos inputs nor its infantry firing offsets.
+const KRATOS_FLH: u32 = 0x9F1B_D701;
+// Tiberian Sun webs (docs/ts-webs.md) store the frame an infantryman's web
+// runs out with a byte saying he was webbed, a warhead's web keys and an
+// infantry type's Struggle record. Older worlds hold none: no man was
+// webbed, end frame 0 has passed, no warhead webs and no type has Struggle
+// frames.
+const TS_WEBS: u32 = 0xF215_BF3A;
+// The base plan's defense cells (`HouseClass+0x5738`, read by `BaseClass::Load`
+// at 0x0042EE30) join the saved shape: the plan's own nodes carry the defenses
+// it placed, and the vector names the cells the base supplies. This build
+// writes the `TS_WEBS` shape plus that vector, so its layout id differs from
+// every writer above. Recompute it with `snapshot-layout` when the saved shape
+// changes, as the writer's own layout id does.
+const BASE_PLAN_DEFENSE_CELLS: u32 = 0xA534_937B;
 
 /// The rules digest a converted save carries: the loader takes the rules the
 /// game has instead of proving the digest the old writer computed, whose
@@ -55,7 +85,7 @@ pub fn supports(header: &GameSnapshotHeader) -> bool {
         && previous_layout(header.layout).is_some()
         && header.compatibility().matches_build()
         && SNAPSHOT_ENVELOPE_VERSION == MIGRATION_ENVELOPE_VERSION
-        && snapshot_layout() == HOUSE_DEGRADES
+        && snapshot_layout() == BASE_PLAN_DEFENSE_CELLS
 }
 
 fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
@@ -66,6 +96,23 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
     const PENDING_DECK: (&str, &[&str]) = ("PendingBridgeCell", &["corrected_deck_level"]);
     const SPIN: (&str, &[&str]) = ("FlyRuntime", &["spinning", "spin_rate"]);
     const DEGRADES: (&str, &[&str]) = ("HouseState", &["ares_degrades"]);
+    const ICE_TIMER: (&str, &[&str]) = ("ScenarioSession", &["ice_growth_timer"]);
+    const ICE_CRACKS: (&str, &[&str]) = ("Simulation", &["ice_cracks"]);
+    const ICE_SINK: (&str, &[&str]) = ("SinkingState", &["ice"]);
+    const DENT: (&str, &[&str]) = ("Simulation", &["terrain_dent"]);
+    const LIMPETS: (&str, &[&str]) = ("Seldom", &["limpets"]);
+    const LIMPETED: (&str, &[&str]) = ("FootSpeedState", &["limpeted"]);
+    const ANIM_SOUNDS: (&str, &[&str]) = ("AnimTypeReferences", &["bounce_sound", "expire_sound"]);
+    const KRATOS_INPUTS: (&str, &[&str]) = ("ProcessedRulesLayers", &["kratos_inputs"]);
+    const KRATOS_OFFSETS: (&str, &[&str]) = ("WeaponOffsets", &["crawling", "elite_crawling"]);
+    const WEB: (&str, &[&str]) = ("InfantryRuntime", &["webbed"]);
+    const WEB_TIMER: (&str, &[&str]) = ("Seldom", &["web"]);
+    const WARHEAD_WEB: (&str, &[&str]) = ("WarheadAnimReadState", &["web"]);
+    const STRUGGLE: (&str, &[&str]) = ("InfantrySequenceBank", &["struggle"]);
+    // The base plan's defense cells (`HouseClass+0x5738`). Every writer above
+    // the one that added them holds no vector, so the cells a base supplies
+    // convert as an empty list.
+    const DEFENSE_CELLS: (&str, &[&str]) = ("BasePlanState", &["defense_cells"]);
     let absent_fields: &'static [_] = match source {
         V0_3_8_AND_0_3_9 | V0_4_0 => &[
             IMAGE_FLAGS,
@@ -74,10 +121,144 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             PENDING_DECK,
             SPIN,
             DEGRADES,
+            ICE_TIMER,
+            ICE_CRACKS,
+            ICE_SINK,
+            DENT,
+            LIMPETS,
+            LIMPETED,
+            ANIM_SOUNDS,
+            KRATOS_INPUTS,
+            KRATOS_OFFSETS,
+            WEB,
+            WEB_TIMER,
+            WARHEAD_WEB,
+            STRUGGLE,
+            DEFENSE_CELLS,
         ],
-        ALPHA_SHAPE_LISTENER => &[IMAGE_FLAGS, DECK, PENDING_DECK, SPIN, DEGRADES],
-        ALTERNATE_THEATER_ART => &[DECK, PENDING_DECK, SPIN, DEGRADES],
-        BRIDGE_DECK_AND_FLY_SPIN => &[DEGRADES],
+        ALPHA_SHAPE_LISTENER => &[
+            IMAGE_FLAGS,
+            DECK,
+            PENDING_DECK,
+            SPIN,
+            DEGRADES,
+            ICE_TIMER,
+            ICE_CRACKS,
+            ICE_SINK,
+            DENT,
+            LIMPETS,
+            LIMPETED,
+            ANIM_SOUNDS,
+            KRATOS_INPUTS,
+            KRATOS_OFFSETS,
+            WEB,
+            WEB_TIMER,
+            WARHEAD_WEB,
+            STRUGGLE,
+            DEFENSE_CELLS,
+        ],
+        ALTERNATE_THEATER_ART => &[
+            DECK,
+            PENDING_DECK,
+            SPIN,
+            DEGRADES,
+            ICE_TIMER,
+            ICE_CRACKS,
+            ICE_SINK,
+            DENT,
+            LIMPETS,
+            LIMPETED,
+            ANIM_SOUNDS,
+            KRATOS_INPUTS,
+            KRATOS_OFFSETS,
+            WEB,
+            WEB_TIMER,
+            WARHEAD_WEB,
+            STRUGGLE,
+            DEFENSE_CELLS,
+        ],
+        BRIDGE_DECK_AND_FLY_SPIN => &[
+            DEGRADES,
+            ICE_TIMER,
+            ICE_CRACKS,
+            ICE_SINK,
+            DENT,
+            LIMPETS,
+            LIMPETED,
+            ANIM_SOUNDS,
+            KRATOS_INPUTS,
+            KRATOS_OFFSETS,
+            WEB,
+            WEB_TIMER,
+            WARHEAD_WEB,
+            STRUGGLE,
+            DEFENSE_CELLS,
+        ],
+        HOUSE_DEGRADES => &[
+            ICE_TIMER,
+            ICE_CRACKS,
+            ICE_SINK,
+            DENT,
+            LIMPETS,
+            LIMPETED,
+            ANIM_SOUNDS,
+            KRATOS_INPUTS,
+            KRATOS_OFFSETS,
+            WEB,
+            WEB_TIMER,
+            WARHEAD_WEB,
+            STRUGGLE,
+            DEFENSE_CELLS,
+        ],
+        TS_ICE => &[
+            DENT,
+            LIMPETS,
+            LIMPETED,
+            ANIM_SOUNDS,
+            KRATOS_INPUTS,
+            KRATOS_OFFSETS,
+            WEB,
+            WEB_TIMER,
+            WARHEAD_WEB,
+            STRUGGLE,
+            DEFENSE_CELLS,
+        ],
+        TERRAIN_DENT => &[
+            LIMPETS,
+            LIMPETED,
+            ANIM_SOUNDS,
+            KRATOS_INPUTS,
+            KRATOS_OFFSETS,
+            WEB,
+            WEB_TIMER,
+            WARHEAD_WEB,
+            STRUGGLE,
+            DEFENSE_CELLS,
+        ],
+        TS_LIMPETS => &[
+            ANIM_SOUNDS,
+            KRATOS_INPUTS,
+            KRATOS_OFFSETS,
+            WEB,
+            WEB_TIMER,
+            WARHEAD_WEB,
+            STRUGGLE,
+            DEFENSE_CELLS,
+        ],
+        TS_ANIM_SOUNDS => &[
+            KRATOS_INPUTS,
+            KRATOS_OFFSETS,
+            WEB,
+            WEB_TIMER,
+            WARHEAD_WEB,
+            STRUGGLE,
+            DEFENSE_CELLS,
+        ],
+        KRATOS_FLH => &[WEB, WEB_TIMER, WARHEAD_WEB, STRUGGLE, DEFENSE_CELLS],
+        // Tiberian Sun webs were the last upstream writer. Its worlds hold no
+        // defense-cell vector: the base plan's nodes carry the defenses it
+        // placed, and the vector that names the supplied cells converts empty.
+        TS_WEBS => &[DEFENSE_CELLS],
         _ => return None,
     };
     Some(save_codec::PreviousLayout {
@@ -93,7 +274,8 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
 /// only its stock Arctic setting and latch. Keep both exactly as saved.
 pub fn migrate(bytes: &mut Vec<u8>) -> Result<(), MigrationError> {
     let target = snapshot_layout();
-    if SNAPSHOT_ENVELOPE_VERSION != MIGRATION_ENVELOPE_VERSION || target != HOUSE_DEGRADES {
+    if SNAPSHOT_ENVELOPE_VERSION != MIGRATION_ENVELOPE_VERSION || target != BASE_PLAN_DEFENSE_CELLS
+    {
         return Err(MigrationError::UnsupportedTarget(target));
     }
 
@@ -226,7 +408,7 @@ mod tests {
         let error = migrate(&mut bytes).unwrap_err();
         assert_eq!(bytes, original);
         if SNAPSHOT_ENVELOPE_VERSION != MIGRATION_ENVELOPE_VERSION
-            || snapshot_layout() != HOUSE_DEGRADES
+            || snapshot_layout() != BASE_PLAN_DEFENSE_CELLS
         {
             assert!(matches!(error, MigrationError::UnsupportedTarget(_)));
             return;
@@ -235,7 +417,13 @@ mod tests {
             matches!(error, MigrationError::UnsupportedSource(layout) if layout == wrong_layout)
         );
 
-        let mut bytes = GameSnapshot::save_validated(&Simulation::new(), 0, 0, "migration", 0);
+        // The empty world as the v0.3.8 writer wrote it, without the fields
+        // that writer lacked.
+        let current = GameSnapshot::save_validated(&Simulation::new(), 0, 0, "migration", 0);
+        let snapshot: GameSnapshot = save_codec::deserialize(&current).unwrap();
+        let mut bytes =
+            save_codec::serialize_previous(&snapshot, &previous_layout(V0_3_8_AND_0_3_9).unwrap())
+                .unwrap();
         let old_preamble = save_codec::serialize(&GameSnapshotPreamble {
             product_magic: SNAPSHOT_PRODUCT_MAGIC,
             envelope_version: SNAPSHOT_ENVELOPE_VERSION,

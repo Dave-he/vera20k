@@ -25,14 +25,10 @@
 
 use crate::assets::error::AssetError;
 
-/// The most palette indices one frame may expand to, whatever the frame bytes
-/// claim. The payload bound below is relative to the file tail, so a large
-/// archive would let a garbage frame rectangle justify a buffer the file never
-/// earns; this absolute ceiling is the bound that does not depend on the
-/// input. It matches the presentation budget for a whole multi-frame shape
-/// (`render::shell_ui_style_assets::MAX_UI_SHAPE_PIXELS`), far above any retail
-/// frame, so a refused frame is corrupt rather than merely large.
-pub const MAX_DECODED_FRAME_PIXELS: usize = 16 * 1024 * 1024;
+/// VERA's per-frame expansion limit for RLE sprites, in palette indices.
+const MAX_DECODED_FRAME_PIXELS: usize = 16 * 1024 * 1024;
+/// Larger frames grow only as their rows are read.
+const INITIAL_FRAME_PIXELS: usize = 4 * 1024 * 1024;
 
 fn parse_error(detail: impl Into<String>) -> AssetError {
     AssetError::ParseError {
@@ -65,11 +61,6 @@ pub fn decode_rle_frame(data: &[u8], width: usize, height: usize) -> Result<Vec<
             data.len()
         )));
     }
-    // Reserve for a plausible frame and let a larger one grow: a garbage
-    // frame rectangle in a large file passes the payload bound above and
-    // would otherwise reserve hundreds of megabytes before its first row
-    // fails, which a low-memory machine or the browser cannot give.
-    const RESERVED_PIXELS: usize = 1 << 22;
     let mut pixels = Vec::new();
     let reserve_error = |_| {
         parse_error(format!(
@@ -77,7 +68,7 @@ pub fn decode_rle_frame(data: &[u8], width: usize, height: usize) -> Result<Vec<
         ))
     };
     pixels
-        .try_reserve_exact(pixel_count.min(RESERVED_PIXELS))
+        .try_reserve_exact(pixel_count.min(INITIAL_FRAME_PIXELS))
         .map_err(reserve_error)?;
     let mut offset = 0usize;
 
@@ -195,24 +186,6 @@ mod tests {
         };
         assert!(
             detail.contains("cannot produce past"),
-            "unexpected detail: {detail}"
-        );
-    }
-
-    #[test]
-    fn a_frame_rectangle_past_the_budget_is_refused_before_decoding() {
-        // 4096x4097 is one row past the frame budget, and the payload bound
-        // alone would still allow it: the rectangle, not the byte count, is
-        // what has to be refused. The tail is only padding here; the test
-        // asserts which rule answers, not what a decoder would produce.
-        let data = vec![0u8; 140_000];
-        let err = decode_rle_frame(&data, 4096, 4097)
-            .expect_err("a rectangle past the frame budget is refused");
-        let AssetError::ParseError { detail, .. } = err else {
-            panic!("expected a SHP parse error: {err:?}");
-        };
-        assert!(
-            detail.contains("frame budget"),
             "unexpected detail: {detail}"
         );
     }

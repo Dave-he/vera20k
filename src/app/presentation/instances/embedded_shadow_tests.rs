@@ -329,7 +329,7 @@ fn stock_turreted_shp_pieces(carrier: Option<[f32; 2]>) -> Vec<ObjectPieceInstan
         simulation: sim,
         resources: SimResources::new(rules).into(),
     };
-    let frame = PresentationFrame::capture(&runtime, &Default::default(), false);
+    let frame = PresentationFrame::capture(&runtime, &Default::default(), false, None);
     let record = frame.object(id).unwrap();
     assert!(!record.is_voxel());
     // Eight body frames, the 32-frame turret ring from frame 8, then the
@@ -398,7 +398,7 @@ fn stock_turreted_shp_pieces(carrier: Option<[f32; 2]>) -> Vec<ObjectPieceInstan
         house_colors: &colors,
         building_zshape: None,
     };
-    let order = frame.display_order(&runtime.simulation);
+    let order = frame.display_order();
     if let Some(carrier) = carrier {
         let mut cargo = record.clone();
         cargo.on_carryall = true;

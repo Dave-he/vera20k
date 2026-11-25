@@ -188,7 +188,7 @@ impl From<Arc<[u8]>> for SharedBytes {
 }
 
 impl SharedBytes {
-    /// Fault a mapped file's pages in on a short-lived thread, so a reader
+    /// Fault a mapped file's pages in on the read-ahead worker, so a reader
     /// streaming it (a theme song on the audio device) doesn't wait on the
     /// disk mid-play. `StreamPlayer__PlayFile @ 0x00407B60` likewise buffers
     /// seconds of file ahead of its decoder. Owned bytes are already in memory.
@@ -198,18 +198,51 @@ impl SharedBytes {
             if !matches!(self.0.bytes, MixBytes::Mapped(_)) {
                 return;
             }
-            let bytes = self.clone();
-            // A failed spawn only loses the warm-up; the reader still faults pages
-            // in itself.
-            let _ = std::thread::Builder::new()
-                .name("asset-read-ahead".into())
-                .spawn(move || {
-                    let touched = bytes.chunks(4096).fold(0u8, |sum, page| sum ^ page[0]);
-                    std::hint::black_box(touched);
-                });
+            let Some(worker) = read_ahead_worker() else {
+                return;
+            };
+            // A busy worker is already faulting pages in; the reader faults
+            // the rest in itself.
+            let _ = worker.try_send(self.clone());
         }
     }
 }
+
+/// One worker handles mapped-file read-ahead for the process. A one-entry
+/// queue bounds the number of retained file views when requests arrive faster
+/// than the worker can touch their pages.
+#[cfg(not(all(feature = "wasm", target_arch = "wasm32", target_os = "unknown")))]
+fn read_ahead_worker() -> Option<&'static std::sync::mpsc::SyncSender<SharedBytes>> {
+    static WORKER: std::sync::OnceLock<Option<std::sync::mpsc::SyncSender<SharedBytes>>> =
+        std::sync::OnceLock::new();
+    WORKER
+        .get_or_init(|| {
+            let (sender, receiver) = std::sync::mpsc::sync_channel::<SharedBytes>(1);
+            // A failed spawn only loses the warm-up; the reader still faults
+            // pages in itself.
+            std::thread::Builder::new()
+                .name("asset-read-ahead".into())
+                .spawn(move || {
+                    while let Ok(bytes) = receiver.recv() {
+                        let touched = bytes.chunks(4096).fold(0u8, |sum, page| sum ^ page[0]);
+                        std::hint::black_box(touched);
+                    }
+                })
+                .ok()
+                .map(|_handle| {
+                    #[cfg(test)]
+                    READ_AHEAD_WORKERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    sender
+                })
+        })
+        .as_ref()
+}
+
+#[cfg(all(
+    test,
+    not(all(feature = "wasm", target_arch = "wasm32", target_os = "unknown"))
+))]
+static READ_AHEAD_WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 impl std::ops::Deref for SharedBytes {
     type Target = [u8];
@@ -689,6 +722,24 @@ impl MixArchive {
 #[cfg(all(test, tests_assets))]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(not(all(feature = "wasm", target_arch = "wasm32", target_os = "unknown")))]
+    fn repeated_mapped_read_ahead_requests_start_one_worker() {
+        let map = memmap2::MmapMut::map_anon(4096)
+            .unwrap()
+            .make_read_only()
+            .unwrap();
+        let bytes = SharedBytes(MixData::from_mapped(map));
+        for _ in 0..8 {
+            bytes.read_ahead();
+        }
+        assert_eq!(
+            READ_AHEAD_WORKERS.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "mapped read-ahead requests share one worker"
+        );
+    }
 
     /// An archive whose index lists one id four times. The native resolver
     /// (`MixFileSystem__Resolve_First` @ `0x005B4430`) probes the midpoint of

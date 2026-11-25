@@ -83,7 +83,12 @@ Players on one build reach the same answer. Older builds, including those that
 load an installed `ares.mix` with No mod selected, are refused by the existing
 build check. A rollback restores that build's earlier selection and INI reading.
 Ares needs no build feature; the retired `ares` feature's `false` is kept only in the
-replay and save rules hash (`RuleSet::simulation_config_hash`).
+replay and save rules hash (`RuleSet::simulation_config_hash`). The same hash
+also carries the effective VERA computer-player policy when a game enables it
+([VERA's own computer player](vera-ai.md)) and the delayed-death timing a
+warhead's overflowing `DelayKillAtMax` produces. Replays and direct save loads
+check a recorded rules digest when it is nonzero. Save conversion clears that
+digest and loads with the current game's rules and assets.
 Whether Phobos plays is decided from the same rules, mode and map
 ([the Phobos switch](phobos.md#the-phobos-switch)) and adds nothing to the
 digest, so players on one build reach the same answer; older builds are refused
@@ -416,6 +421,14 @@ are left out, as the rules digest compares them with the mod
 A launcher's match that names such a file does not point at the launcher, whose rules
 parts leave those files out. On LAN the refusal keeps the native text without this
 list. Nothing new is exchanged and the identity stays 32 bytes.
+
+A snow map with `[Map] VeraIce=yes` uses the original Yuri's Revenge snow
+terrain and VERA's installed ice pack. The map agreement covers the switch, the
+painted cells and the map's weights. Both loose `Terrain` files enter the
+multiplayer build identity. Each game checks their lengths and SHA-256 against
+that build before using them. An incomplete or changed pack stops the ice map
+from loading and tells the player to restore the installed files. Ice Lake uses the same map identity and transfer
+as any authored map. A mixed-build room follows the existing build check.
 A game from before this is another build, which the build check refuses first; a
 rollback starts such games together again.
 At each deadline, missing input is empty; a command joins the next unsealed
@@ -1028,6 +1041,14 @@ other players' games cannot tell why and say only that another game differs. Not
 is exchanged. A game from before this is another version and is refused by the build
 check first; a rollback compares the setting itself again, and one past the setting
 reads none and plays Auto.
+
+The launcher probe and the room compare whether the startup rules enable Kratos.
+The named rules part is `settings.kratos: true`. When Kratos is off both the agreement
+bytes and the rules parts keep their previous form. The final start also compares
+the loaded scenario, which can change the eligible infantry and their art. The client
+names Kratos when it is active. Older lobbies can ignore the optional `kratos` sign-in
+detail. Older clients and a rolled-back client keep the existing version and rules
+checks; a mismatch refuses the start.
 
 [RA2 Mode](ra2-mode.md) (`[VERA] RA2Mode=` or `-ra2`) is not a room rule either: each
 game reads it at start, and it adds its own words to the rules digest

@@ -31,7 +31,7 @@ use crate::ui::shell::geom::ShellAlign;
 use crate::ui::shell::geom::{self, RectPx, fit_window};
 use crate::ui::shell::layout::RectTable;
 use crate::ui::shell::layout_data;
-use crate::ui::shell::menu_page::{self, MenuPageButtonSpec, MenuPageLayout, MenuPageSpec};
+use crate::ui::shell::menu_page::{MenuPageButtonSpec, MenuPageLayout, MenuPageSpec};
 use crate::ui::shell::static_reveal::{HEADING_KIND1, Kind1Params, STATUS_LINE_KIND1};
 
 pub const CAMPAIGN_SCORE_DIALOG: DialogResourceId = DialogResourceId(0x0103);
@@ -233,19 +233,39 @@ impl CampaignScoreDialog {
         self.page().back.id
     }
 
-    /// The controls as nodes: Continue presses, and each static with status
-    /// help only hovers.
+    /// The controls as nodes in the order they paint: Continue presses,
+    /// each kind-1 static is a `Text` node that only hovers, and only when
+    /// it has status help; then `0xBC7`'s score cells (row by row, the name
+    /// left and the numbers right) and the art window `0x72B`.
     pub fn nodes(self) -> vera20k_gui::NodeSpec {
+        use crate::ui::score_shell::static_node;
         use vera20k_gui::{NodeKind, NodeSpec};
-        let node = |c: &CampaignScoreControlSpec| match c.tooltip_key {
-            _ if c.id == self.continue_button() => Some(
-                NodeSpec::new(NodeKind::Button)
+        let node = |c: &CampaignScoreControlSpec| {
+            if c.id == self.continue_button() {
+                return NodeSpec::new(NodeKind::Button)
                     .id(i32::from(c.id))
-                    .label(c.caption_key.unwrap_or_default()),
-            ),
-            help => help.map(|key| menu_page::hover_target(c.id, key)),
+                    .label(c.caption_key.unwrap_or_default());
+            }
+            let text = static_node(c.id, c.align);
+            match c.tooltip_key {
+                Some(key) => text.tooltip(key),
+                None => text,
+            }
         };
-        NodeSpec::new(NodeKind::Dialog).children(self.controls().iter().filter_map(node))
+        let rows: &[[u16; 5]] = match self {
+            Self::Victory => &[],
+            Self::CampaignEnd => &crate::ui::coop_score_shell::ROW_CELLS,
+        };
+        let cells = rows.iter().flat_map(|ids| {
+            let align = |column| if column == 0 { L } else { R };
+            ids.iter()
+                .enumerate()
+                .map(move |(column, id)| static_node(*id, align(column)))
+        });
+        NodeSpec::new(NodeKind::Dialog)
+            .children(self.controls().iter().map(node))
+            .children(cells)
+            .child(NodeSpec::new(NodeKind::Image).id(i32::from(SCORE_ART_REGION_STATIC)))
     }
 
     pub fn control(self, id: u16) -> Option<&'static CampaignScoreControlSpec> {
@@ -562,6 +582,11 @@ impl CampaignScorePage {
         &self.cells
     }
 
+    /// `0xBC7`'s score cell `id`.
+    pub fn cell(&self, id: u16) -> Option<&CampaignScoreCell> {
+        self.cells.iter().find(|cell| cell.id == id)
+    }
+
     /// Native SHOW completion (`0x4EC`): start every kind-1 static and the
     /// kind-4 emblem timer when the SCRA frames have been loaded for control
     /// `0x72B`. Idempotent, so a repeated completion or a wave-less fallback
@@ -607,6 +632,14 @@ impl CampaignScorePage {
         self.emblem_animation
             .as_ref()
             .map(|animation| animation.frame)
+    }
+
+    /// Hold the specified SCRA frame once the renderer has presented it, so a
+    /// steady diagnostic capture can wait for the text to finish revealing.
+    pub(crate) fn hold_emblem_frame_for_capture(&mut self, frame: usize, now: Instant) {
+        if let Some(animation) = self.emblem_animation.as_mut().filter(|a| a.frame == frame) {
+            animation.next_tick_at = now + Duration::from_secs(3600);
+        }
     }
 
     /// Next native timer deadline while the SCRA kind-4 animation is active.
@@ -662,6 +695,22 @@ mod tests {
     }
 
     #[test]
+    fn steady_capture_holds_the_emblem_at_its_requested_frame() {
+        let opened = Instant::now();
+        let mut page = open(opened);
+        page.start_presentation(44, opened);
+        page.hold_emblem_frame_for_capture(1, opened);
+
+        let first_tick = opened + CAMPAIGN_SCORE_EMBLEM_INTERVAL;
+        assert_eq!(page.poll_emblem_animation(first_tick), Some(1));
+        page.hold_emblem_frame_for_capture(1, first_tick);
+        assert_eq!(
+            page.poll_emblem_animation(first_tick + CAMPAIGN_SCORE_EMBLEM_INTERVAL),
+            Some(1)
+        );
+    }
+
+    #[test]
     fn campaign_emblem_timer_remains_scheduled_after_text_reveals_finish() {
         let opened = Instant::now();
         let mut page = open(opened);
@@ -669,9 +718,7 @@ mod tests {
         for elapsed_ms in (0..10_000).step_by(15) {
             let now = opened + Duration::from_millis(elapsed_ms);
             page.poll_emblem_animation(now);
-            for static_text in &mut page.statics.0 {
-                static_text.paint(now);
-            }
+            page.statics.paint(now, true);
             page.statics.commit_presented();
             if page.statics.is_terminal() {
                 assert!(

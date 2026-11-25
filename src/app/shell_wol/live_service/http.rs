@@ -2140,6 +2140,29 @@ mod tests {
         lobby.join().unwrap()
     }
 
+    /// A lobby that answers one request with a raw HTTP response and
+    /// closes. It reads until the request holds what `wants` looks for.
+    fn one_request_lobby(
+        wants: impl Fn(&[u8]) -> bool + Send + 'static,
+        response: &'static [u8],
+    ) -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let lobby = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let (mut request, mut chunk) = (Vec::new(), [0; 1024]);
+            while !wants(&request) {
+                let read = stream.read(&mut chunk).unwrap();
+                assert_ne!(read, 0, "the request ended early");
+                request.extend_from_slice(&chunk[..read]);
+            }
+            let _ = stream.write_all(response);
+            let _ = stream.flush();
+        });
+        (address, lobby)
+    }
+
     /// The path a request's head asks for.
     fn request_path(head: &str) -> &str {
         head.split(' ').nth(1).unwrap_or_default()
