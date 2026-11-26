@@ -72,11 +72,11 @@ switch off. Later writers each stored part of the current layout: the
 Each converts with its missing parts empty: no projectile path, push or
 immunity modifier, no swapped image, and without the reads the switch stays
 off, as those matches played. No frozen save holds `0x8C73B1B3`. The
-`b268ba798` writer's layout `0xC66CE753` holds everything but the client
-modules' state of the current layout `0x9909B4E7` (RFC 0001 section 10: the
-messages waiting for `on_message` and the room's `AutomationAllowed`); its
-saves convert with no message waiting and automation not allowed. The
-`0b918d053` writer covers direct loading of that upstream layout.
+`b268ba798` writer's layout `0xC66CE753` predates the client modules' state
+(RFC 0001 section 10: the messages waiting for `on_message` and the room's
+`AutomationAllowed`). Its saves convert with an empty message queue and
+automation off. The `0b918d053` writer adds this state at layout `0x9909B4E7`,
+which this fork opens through **Convert**.
 
 This fork also stores the base plan's defense cells (`HouseClass+0x5738`,
 read by `BaseClass::Load` at 0x0042EE30). The `12fe1a5ee` writer's layout
@@ -84,9 +84,8 @@ read by `BaseClass::Load` at 0x0042EE30). The `12fe1a5ee` writer's layout
 `0x9046B94A` also stores the first Wasm extension modules, the Phobos image
 swap and the NPatch key reads. Conversion preserves the defense cells in
 both layouts. Saves from upstream convert with an empty defense-cell list.
-The `65fe9a39c` writer keeps those cells beside the Wasm control points
-and client messages under layout `0x9C7B999C`.
-
+The current layout `0x9C7B999C` loads directly and keeps those cells beside
+the Wasm control points and client messages, as written by `65fe9a39c`.
 
 Run the menu and compatibility tests with this command.
 
