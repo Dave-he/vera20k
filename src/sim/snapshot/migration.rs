@@ -559,6 +559,13 @@ mod tests {
         let mut bytes = save_codec::serialize(&image).unwrap();
         let after_image = 8 + image.image().len();
         assert_eq!(&bytes[after_image..after_image + 3], &[1, 0, 1]);
+        // The writer this layout names held neither the Ares alternate-theater
+        // flag nor the Phobos image swap, so its bytes carry neither. The swap
+        // is the tag byte in front of the model slots.
+        let tail = save_codec::serialize(&image.model_slots).unwrap();
+        let swap_tag = bytes.len() - tail.len() - 1;
+        assert_eq!(bytes[swap_tag], 0);
+        bytes.remove(swap_tag);
         bytes.remove(after_image + 1);
         let mut offsets = Vec::new();
         let (restored, rest) = save_codec::deserialize_previous::<ObjectImageState>(
@@ -569,7 +576,7 @@ mod tests {
         .unwrap();
         assert_eq!(restored, image);
         assert!(rest.is_empty());
-        assert_eq!(offsets, [(after_image + 1, 1)]);
+        assert_eq!(offsets, [(after_image + 1, 1), (swap_tag - 1, 1)]);
     }
 
     #[test]
