@@ -39,10 +39,14 @@ released_saves! {
     main_30e9a0f38: "main-30e9a0f38", 0xF215_BF3A, Skirmish;
     main_12fe1a5ee: "main-12fe1a5ee", 0xA534_937B, Skirmish;
     main_a33fcac81: "main-a33fcac81", 0xE18E_A373, Skirmish;
+    main_d17e45e42: "main-d17e45e42", 0x919A_B3CD, Skirmish;
     main_2e39b88dd: "main-2e39b88dd", 0xB65C_0664, Skirmish;
     main_2e67ebaa8: "main-2e67ebaa8", 0xE527_9FB2, Skirmish;
     main_fb29ff473: "main-fb29ff473", 0xBA51_A42C, Skirmish;
     main_fc67d6d8: "main-fc67d6d8", 0x9046_B94A, Skirmish;
+    main_b268ba798: "main-b268ba798", 0xC66C_E753, Skirmish;
+    main_0b918d053: "main-0b918d053", 0x9909_B4E7, Skirmish;
+    main_65fe9a39c: "main-65fe9a39c", 0x9C7B_999C, Skirmish;
 }
 
 const TUNNEL_FIXTURE: &str = "v0.3.9-tunnel";

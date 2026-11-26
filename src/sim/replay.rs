@@ -1584,9 +1584,10 @@ impl ReplayRunner {
         playback.verification(&loaded.runtime)
     }
 
-    pub(crate) fn record_campaign_stage(
+    /// Record an authored match from frame zero for the standalone verifier.
+    pub fn record_authored_match(
         scene: &mut crate::headless_scenario::HeadlessScenario,
-        start: &crate::sim::scenario_bootstrap::AuthoredCampaignStart,
+        launch: ReplayLaunchInput<'_>,
         frames: u32,
     ) -> Result<ReplayLog> {
         let sim = &mut scene.runtime.simulation;
@@ -1604,7 +1605,7 @@ impl ReplayRunner {
         });
         log.startup = Some(Box::new(ReplayStartup::capture(
             &scene.runtime,
-            ReplayLaunchInput::MapHouses(start),
+            launch,
             &scene.source,
             scene.map.ini.content_hash(),
             tick_ms,
@@ -1626,7 +1627,7 @@ impl ReplayRunner {
             )?;
             anyhow::ensure!(
                 frame.tick.frame_committed && frame.tick.state_hash.is_some(),
-                "campaign stopped before frame {}; reduce the requested frame count or inspect the stage's trigger holds",
+                "match stopped before frame {}; reduce the requested frame count or inspect the map's trigger holds",
                 index + 1
             );
             log.record_tick(
