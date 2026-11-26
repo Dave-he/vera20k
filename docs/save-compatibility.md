@@ -84,6 +84,9 @@ read by `BaseClass::Load` at 0x0042EE30). The `12fe1a5ee` writer's layout
 `0x9046B94A` also stores the first Wasm extension modules, the Phobos image
 swap and the NPatch key reads. Conversion preserves the defense cells in
 both layouts. Saves from upstream convert with an empty defense-cell list.
+The `65fe9a39c` writer keeps those cells beside the Wasm control points
+and client messages under layout `0x9C7B999C`.
+
 
 Run the menu and compatibility tests with this command.
 

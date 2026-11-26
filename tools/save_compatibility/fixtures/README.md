@@ -36,6 +36,7 @@ and executes the saved command before it accepts the fixture.
 | `main-fc67d6d8.sav` | `fc67d6d8` (pre-release merge: Wasm modules, ArtImageSwap, NPatch and the fork's defense cells) | `skirmish` |
 | `main-b268ba798.sav` | `b268ba798` (Wasm module control points, ArtImageSwap and NPatch) | `skirmish` |
 | `main-0b918d053.sav` | `0b918d053` (Wasm client modules on the control points) | `skirmish` |
+| `main-65fe9a39c.sav` | `65fe9a39c` (Wasm client messages and the fork’s defense cells) | `skirmish` |
 
 The Kratos writer revision is in PR #5080. In a fresh clone, fetch it with
 `git fetch origin pull/5080/head` before checking out `bc55c35e7`. The Wasm
