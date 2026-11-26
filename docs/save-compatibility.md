@@ -74,7 +74,7 @@ This fork's writer adds the base plan's defense cells (`HouseClass+0x5738`,
 read by `BaseClass::Load` at 0x0042EE30) to that shape: the `12fe1a5ee`
 writer's layout `0xA534937B` stores that vector beside the webs and converts
 with no module, no swapped image and no NPatch reads, and this build's writer
-stores it beside all three.
+stores it beside all three under its own layout `0x9046B94A`.
 
 Run the menu and compatibility tests with this command.
 
