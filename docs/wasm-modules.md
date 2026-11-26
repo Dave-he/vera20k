@@ -119,6 +119,41 @@ the source tree). Its Wasm verbs need no game install:
   player's click would, human or computer; `House::order` gives computer houses
   orders for many units and production.
 - Triggers: `Trigger::on(Event::TAKE_DAMAGE).bind(..).where_prop(..).enqueue(..)`.
+- Unit events and decisions (RFC 0.0.22): `Event::TARGET_CHANGED`, `DETONATED`,
+  `CRUSHED`, `DEPLOYED`, `PROMOTED`, `EXPERIENCE_GAINED`, `CLOAKED` and `DECLOAKED`
+  are delivered, with views such as `PromotedEvent`. `FIRE_ALLOWED`, `RETALIATE`,
+  `DESTINATION_SET`, `CRUSH_ALLOWED`, `HARVEST_CELL`, `DEPLOY_ALLOWED` and
+  `DAMAGE_INCOMING` are decisions only: bind them with `Trigger::decide_sync` and
+  answer in `on_decide!` (`FireAllowedDecision::set_result(0)` vetoes a shot). They are
+  `preview` and may change. `MISSION_CHANGED` is numbered but deferred (not raised);
+  check with `has_kind`. A `SpeedMultiplier` modifier also slows or speeds up
+  aircraft, jumpjets and rockets. A `ROTMultiplier` modifier (preview) scales how
+  fast a vehicle's or building's body turns (not turrets or aircraft). An `ImmunityFlags` override (preview; `Override`
+  only, bits 0..6) grants or removes immunity to mind control, radiation, poison,
+  psychic damage, chrono, EMP and berserk. `FatalDamageDecision::TIBERIUM_REMAINS`
+  leaves Riparius where the object died.
+- Unit AI decisions (preview): `Event::IDLE_MISSION` picks the mission a unit idles
+  into; `Event::MISSION_STEP` is asked after each Guard, Area Guard, Hunt or Attack
+  mission body of a bound infantryman or vehicle. Its `MissionStepDecision` arrives
+  holding what the body decided; `set_target`, `set_destination`, `set_mission` and
+  `set_delay` replace parts of it (for example a guard that walks to a post, or an
+  attacker that picks its own target). The body has already run, so its shots and
+  deploys stand; a cleared Guard target may be picked up again by the unit's own
+  acquisition.
+- Movement (`preview`, may change): `Event::MOVE_FRAME` asks, every frame a bound
+  vehicle or infantryman on the ground (Drive, Ship, Walk, Mech or Hover) could
+  start a step, whether the module moves it instead: `MoveFrameDecision::step_by(dx,
+  dy)` moves it that many leptons this frame (the engine checks the cell it enters
+  and keeps it on the ground), `set_step` can also turn it or drop its destination,
+  no answer leaves it to its locomotor. `Event::PATH_FOUND` asks when a path search's
+  route is adopted: `PathFoundDecision::set_cells` replaces the route with your
+  cells (each next to the one before, up to 24), `no_route` makes the search fail.
+  `Event::APPROACH_POINT` asks, when a unit chasing a target out of range has picked
+  the cell to drive to, whether it should go elsewhere:
+  `ApproachPointDecision::set_cell` sends it to your cell instead.
+  `Action::push` shoves a ground unit some leptons toward or away from a cell over a
+  few frames, on top of its own movement; `Action::set_facing` turns it. Aircraft,
+  jumpjets, rockets, tunnelling and teleporting units are not covered.
 - INI names: `ini::key`, `ini::registry` and `ini::event` let modders configure the
   module in INI ([below](#ini-names-a-module-registers)).
 
@@ -177,7 +212,8 @@ the action's row in appendix section 5, in order, empty ones 0:
   voxel animation or particle system takes its name or its number.
 - `Mission` takes a mission name (`Hunt`, `Guard`, `Wait`, …), `EndFor` takes `Win`
   or `Lose`, `Teleport` takes `Nearby` or `Fail`, `Modify` takes `Add`, `Multiply`
-  or `Override`; numbers work too.
+  or `Override`; numbers work too. `Push(target,cell,distance,frames)` and
+  `SetFacing(target,facing)` take numbers.
 - A house is a country name; a cell is a waypoint number.
 - Sounds take their `[SoundList]` number.
 
@@ -323,12 +359,21 @@ difference shows within 15 frames.
     variable and distance polls, immediate actions, `once`, enabling and disabling
     triggers, house variables and `get_many`.
 
-  `muster-field` is a small auto-battler campaign without interface code: eight
-  waves and three banners, pay after every battle, hire by ordering units out of a
-  row, keys on a quartermaster for redraw, camp upgrades and the start, three of a
-  kind merged into a champion, and company-wide supplies picked by moving a truck.
-  Its parts are files of their own (`shop`, `battle`, `waves`, `campaign`,
-  `content`, `perks`). It shows two patterns. Player orders become input through
+  `muster-field` is a small auto-battler campaign: eight waves and three banners,
+  pay after every battle, hire by ordering units out of a row, keys on a
+  quartermaster for redraw, camp upgrades and the start, three of a kind merged
+  into a champion, and company-wide supplies picked by moving a truck. Its parts
+  are files of their own (`shop`, `battle`, `campaign`, `perks`, `ui`), and the
+  tables (`content`, `waves`, the supplies' names, the camp's prices) are a crate
+  of their own (`data/`) that both modules link. Its `ui.wasm` (`ui/`) puts the
+  camp on panels: the wave and the company's state, a card per offer with hire and
+  keep, the quartermaster's buttons, the company with a double-click dismissal,
+  and the supplies to pick. The simulation publishes the camp as private house
+  variables, written when they change, and turns each button's two-byte message
+  into the order the key gives, so buttons and orders share one path; variables
+  are saved, so an interface that restarts after a load shows the camp at once.
+  The workspace builds `muster_field.wasm` (`rules.wasm`) and
+  `muster_field_ui.wasm` (`ui.wasm`). It shows two patterns. Player orders become input through
   `CommandAllowed`: the handler may not write, so it refuses the order and queues it
   in module memory for the next `on_frame`. A human house's units are ordered with
   `SetMission`, which works for every house (`House::order` takes computer houses
