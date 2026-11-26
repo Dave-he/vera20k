@@ -25,6 +25,7 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::command::{COMMAND_RECORD_LEN, CommandEnvelope, CommandRecord};
 #[cfg(any(test, feature = "test-support"))]
 use crate::sim::pathfinding::PathGrid;
+use crate::sim::scenario_session::ScenarioPauseChange;
 use crate::sim::skirmish_cheats::SkirmishCheat;
 use crate::sim::world::Simulation;
 #[cfg(any(test, feature = "test-support"))]
@@ -709,13 +710,47 @@ pub enum ScenarioServiceInput {
 
 impl ScenarioServiceInput {
     pub fn apply(self, sim: &mut Simulation) -> Vec<crate::sim::trigger_runtime::TriggerEffect> {
+        match self {
+            Self::Pause => ScenarioPauseInput::Pause.apply(sim).into(),
+            Self::Resume => ScenarioPauseInput::Resume.apply(sim).into(),
+            Self::ExpireTimedPause => ScenarioPauseInput::ExpireTimedPause.apply(sim).into(),
+            Self::StepChronoScreen => {
+                // These write the world outside a frame step.
+                sim.note_revision();
+                sim.step_chrono_screen()
+            }
+        }
+    }
+}
+
+/// The three [`ScenarioServiceInput`]s that change only the ScenarioPause
+/// 684060/684180 owner; [`Self::apply`] returns its typed change. Each
+/// records as the [`ScenarioServiceInput`] of the same name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScenarioPauseInput {
+    Pause,
+    Resume,
+    ExpireTimedPause,
+}
+
+impl ScenarioPauseInput {
+    pub fn apply(self, sim: &mut Simulation) -> ScenarioPauseChange {
         // These write the world outside a frame step.
         sim.note_revision();
         match self {
             Self::Pause => sim.session.pause_scenario(0),
             Self::Resume => sim.session.resume_scenario(),
             Self::ExpireTimedPause => sim.session.expire_scenario_pause(),
-            Self::StepChronoScreen => sim.step_chrono_screen(),
+        }
+    }
+}
+
+impl From<ScenarioPauseInput> for ScenarioServiceInput {
+    fn from(input: ScenarioPauseInput) -> Self {
+        match input {
+            ScenarioPauseInput::Pause => Self::Pause,
+            ScenarioPauseInput::Resume => Self::Resume,
+            ScenarioPauseInput::ExpireTimedPause => Self::ExpireTimedPause,
         }
     }
 }
@@ -1065,6 +1100,18 @@ impl ReplayLog {
             self.record_service(RecordedServiceInput::Scenario(input));
         }
         effects
+    }
+
+    /// [`Self::apply_scenario_service`] for a pause service, with its typed
+    /// change: it records the same input at the same boundary.
+    pub fn apply_scenario_pause(
+        &mut self,
+        sim: &mut Simulation,
+        input: ScenarioPauseInput,
+    ) -> ScenarioPauseChange {
+        let change = input.apply(sim);
+        self.record_service(RecordedServiceInput::Scenario(input.into()));
+        change
     }
 
     /// Record every admitted cheat at the boundary where it changed the world.
@@ -1475,11 +1522,9 @@ impl ReplayPlayback {
 }
 
 fn prepare_authored_replay_world(sim: &mut Simulation) {
-    sim.batch_path_searches();
-    sim.batch_target_scans();
-    sim.present_effect_anims();
-    sim.separate_turn_streams(true);
-    sim.sleep_idle_objects_in_match();
+    // The same handoff a match's start takes ([`Simulation::begin_match_handoff`]):
+    // one owner for the turn streams, the scans and the effect anims.
+    sim.begin_match_handoff();
 }
 
 impl ReplayRunner {

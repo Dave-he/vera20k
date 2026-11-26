@@ -129,7 +129,9 @@ pub mod building_select_bracket;
 pub mod digital_display;
 pub mod insignia_type;
 pub mod kratos_crawling_flh;
+pub mod kratos_freeze;
 pub mod kratos_switch;
+pub mod npatch_switch;
 #[cfg(feature = "phobos")]
 pub mod invulnerability_rules;
 pub mod phobos_parallel_ai_queues;
@@ -167,8 +169,7 @@ pub mod phobos_shields;
 /// feature turns on in every game; this gates the `cfg(feature = "phobos")`
 /// sites not yet moved to that switch, and launch and network identity.
 pub const PHOBOS_ENABLED: bool = cfg!(feature = "phobos");
-/// Whether this binary includes supported NPatch behavior. INIs cannot change it.
-pub const NPATCH_ENABLED: bool = cfg!(feature = "npatch");
+
 /// Whether this binary includes the NPBUG bug-fix extension. INIs cannot
 /// change it; builds without the feature keep every native path.
 pub const NPBUG_ENABLED: bool = cfg!(feature = "npbug");
@@ -251,6 +252,8 @@ pub mod jumpjet_params;
 mod kratos_crawling_flh_tests;
 #[cfg(all(test, tests_rules_a_n))]
 mod kratos_switch_tests;
+#[cfg(all(test, tests_rules_a_n))]
+mod npatch_switch_tests;
 pub mod locomotor_type;
 pub mod mind_control_rules;
 pub mod missile_spawn;

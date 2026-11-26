@@ -45,13 +45,37 @@ const KRATOS_FLH: u32 = 0x9F1B_D701;
 // webbed, end frame 0 has passed, no warhead webs and no type has Struggle
 // frames.
 const TS_WEBS: u32 = 0xF215_BF3A;
-// The base plan's defense cells (`HouseClass+0x5738`, read by `BaseClass::Load`
-// at 0x0042EE30) join the saved shape: the plan's own nodes carry the defenses
-// it placed, and the vector names the cells the base supplies. This build
-// writes the `TS_WEBS` shape plus that vector, so its layout id differs from
-// every writer above. Recompute it with `snapshot-layout` when the saved shape
-// changes, as the writer's own layout id does.
-const BASE_PLAN_DEFENSE_CELLS: u32 = 0xA534_937B;
+// The Wasm extension modules (RFC 0001), as their branch's writer `a33fcac81`
+// stored them: the world stores its modules, their modifiers, variables and
+// claims, and the trigger runtime the triggers they made. Older worlds ran no
+// module: both convert empty.
+const WASM_MODULES: u32 = 0xE18E_A373;
+// Beside them, main's writer from #5205 stores each object image's Phobos
+// ArtImageSwap name (`ObjectImageState::image_swap`). Older worlds swapped no
+// image, as they played when saved.
+const ART_IMAGE_SWAP: u32 = 0x8C73_B1B3;
+// Main's writer once the modules joined it, with both the modules and the
+// image swap.
+const MODULES_AND_IMAGE_SWAP: u32 = 0xB65C_0664;
+// NPatch's branch writer `2e67ebaa8` stored each processed rules layer's NPatch
+// key reads, which decide `RuleSet::npatch` (`rules::npatch_switch`), beside
+// the webs, without the modules or the image swap. Older worlds ran no NPatch
+// switch: their rules keep every NPatch key dormant, as they played when saved.
+const NPATCH_INPUTS: u32 = 0xE527_9FB2;
+// Upstream's current writer stores the modules, the image swap and the NPatch
+// key reads.
+const MODULES_SWAP_AND_NPATCH: u32 = 0xBA51_A42C;
+// This fork's writer adds the base plan's defense cells (`HouseClass+0x5738`,
+// read by `BaseClass::Load` at 0x0042EE30) to that shape: the plan's own nodes
+// carry the defenses it placed, and the vector names the cells the base
+// supplies. Its layout id is the digest of the saved shape, printed by the
+// stock `snapshot-layout` binary (2420554058 = 0x9046B94A); it moves when the
+// saved shape changes.
+const MODULES_SWAP_NPATCH_AND_DEFENSE_CELLS: u32 = 0x9046_B94A;
+// The fork's earlier writer stored the defense cells beside the webs, without
+// the modules, the image swap or the NPatch key reads. Its worlds convert with
+// none of those.
+const FORK_DEFENSE_CELLS: u32 = 0xA534_937B;
 
 /// The rules digest a converted save carries: the loader takes the rules the
 /// game has instead of proving the digest the old writer computed, whose
@@ -85,7 +109,7 @@ pub fn supports(header: &GameSnapshotHeader) -> bool {
         && previous_layout(header.layout).is_some()
         && header.compatibility().matches_build()
         && SNAPSHOT_ENVELOPE_VERSION == MIGRATION_ENVELOPE_VERSION
-        && snapshot_layout() == BASE_PLAN_DEFENSE_CELLS
+        && snapshot_layout() == MODULES_SWAP_NPATCH_AND_DEFENSE_CELLS
 }
 
 fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
@@ -109,9 +133,15 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
     const WEB_TIMER: (&str, &[&str]) = ("Seldom", &["web"]);
     const WARHEAD_WEB: (&str, &[&str]) = ("WarheadAnimReadState", &["web"]);
     const STRUGGLE: (&str, &[&str]) = ("InfantrySequenceBank", &["struggle"]);
+    const EXT_MODULES: (&str, &[&str]) = ("Simulation", &["ext_modules"]);
+    const MODULE_TRIGGERS: (&str, &[&str]) = ("TriggerRuntime", &["module"]);
+    const IMAGE_SWAP: (&str, &[&str]) = ("ObjectImageState", &["image_swap"]);
+    // Worlds older than the NPatch switch stored no key reads either: their
+    // rules kept the switch off, which the all-zero empty read list restores.
+    const NPATCH_KEYS: (&str, &[&str]) = ("ProcessedRulesLayers", &["npatch_inputs"]);
     // The base plan's defense cells (`HouseClass+0x5738`). Every writer above
-    // the one that added them holds no vector, so the cells a base supplies
-    // convert as an empty list.
+    // the fork's own holds no vector, so the cells a base supplies convert as
+    // an empty list.
     const DEFENSE_CELLS: (&str, &[&str]) = ("BasePlanState", &["defense_cells"]);
     let absent_fields: &'static [_] = match source {
         V0_3_8_AND_0_3_9 | V0_4_0 => &[
@@ -134,6 +164,10 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             WEB_TIMER,
             WARHEAD_WEB,
             STRUGGLE,
+            EXT_MODULES,
+            MODULE_TRIGGERS,
+            IMAGE_SWAP,
+            NPATCH_KEYS,
             DEFENSE_CELLS,
         ],
         ALPHA_SHAPE_LISTENER => &[
@@ -155,6 +189,10 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             WEB_TIMER,
             WARHEAD_WEB,
             STRUGGLE,
+            EXT_MODULES,
+            MODULE_TRIGGERS,
+            IMAGE_SWAP,
+            NPATCH_KEYS,
             DEFENSE_CELLS,
         ],
         ALTERNATE_THEATER_ART => &[
@@ -175,6 +213,10 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             WEB_TIMER,
             WARHEAD_WEB,
             STRUGGLE,
+            EXT_MODULES,
+            MODULE_TRIGGERS,
+            IMAGE_SWAP,
+            NPATCH_KEYS,
             DEFENSE_CELLS,
         ],
         BRIDGE_DECK_AND_FLY_SPIN => &[
@@ -192,6 +234,10 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             WEB_TIMER,
             WARHEAD_WEB,
             STRUGGLE,
+            EXT_MODULES,
+            MODULE_TRIGGERS,
+            IMAGE_SWAP,
+            NPATCH_KEYS,
             DEFENSE_CELLS,
         ],
         HOUSE_DEGRADES => &[
@@ -208,6 +254,10 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             WEB_TIMER,
             WARHEAD_WEB,
             STRUGGLE,
+            EXT_MODULES,
+            MODULE_TRIGGERS,
+            IMAGE_SWAP,
+            NPATCH_KEYS,
             DEFENSE_CELLS,
         ],
         TS_ICE => &[
@@ -221,6 +271,10 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             WEB_TIMER,
             WARHEAD_WEB,
             STRUGGLE,
+            EXT_MODULES,
+            MODULE_TRIGGERS,
+            IMAGE_SWAP,
+            NPATCH_KEYS,
             DEFENSE_CELLS,
         ],
         TERRAIN_DENT => &[
@@ -233,6 +287,10 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             WEB_TIMER,
             WARHEAD_WEB,
             STRUGGLE,
+            EXT_MODULES,
+            MODULE_TRIGGERS,
+            IMAGE_SWAP,
+            NPATCH_KEYS,
             DEFENSE_CELLS,
         ],
         TS_LIMPETS => &[
@@ -243,6 +301,10 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             WEB_TIMER,
             WARHEAD_WEB,
             STRUGGLE,
+            EXT_MODULES,
+            MODULE_TRIGGERS,
+            IMAGE_SWAP,
+            NPATCH_KEYS,
             DEFENSE_CELLS,
         ],
         TS_ANIM_SOUNDS => &[
@@ -252,13 +314,39 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
             WEB_TIMER,
             WARHEAD_WEB,
             STRUGGLE,
+            EXT_MODULES,
+            MODULE_TRIGGERS,
+            IMAGE_SWAP,
+            NPATCH_KEYS,
             DEFENSE_CELLS,
         ],
-        KRATOS_FLH => &[WEB, WEB_TIMER, WARHEAD_WEB, STRUGGLE, DEFENSE_CELLS],
-        // Tiberian Sun webs were the last upstream writer. Its worlds hold no
-        // defense-cell vector: the base plan's nodes carry the defenses it
-        // placed, and the vector that names the supplied cells converts empty.
-        TS_WEBS => &[DEFENSE_CELLS],
+        KRATOS_FLH => &[
+            WEB,
+            WEB_TIMER,
+            WARHEAD_WEB,
+            STRUGGLE,
+            EXT_MODULES,
+            MODULE_TRIGGERS,
+            IMAGE_SWAP,
+            NPATCH_KEYS,
+            DEFENSE_CELLS,
+        ],
+        TS_WEBS => &[
+            EXT_MODULES,
+            MODULE_TRIGGERS,
+            IMAGE_SWAP,
+            NPATCH_KEYS,
+            DEFENSE_CELLS,
+        ],
+        WASM_MODULES => &[IMAGE_SWAP, NPATCH_KEYS, DEFENSE_CELLS],
+        ART_IMAGE_SWAP => &[EXT_MODULES, MODULE_TRIGGERS, NPATCH_KEYS, DEFENSE_CELLS],
+        MODULES_AND_IMAGE_SWAP => &[NPATCH_KEYS, DEFENSE_CELLS],
+        NPATCH_INPUTS => &[EXT_MODULES, MODULE_TRIGGERS, IMAGE_SWAP, DEFENSE_CELLS],
+        // Upstream's current writer predates the fork's defense cells.
+        MODULES_SWAP_AND_NPATCH => &[DEFENSE_CELLS],
+        // The fork's earlier writer holds the defense cells but neither the
+        // modules, the image swap nor the NPatch key reads.
+        FORK_DEFENSE_CELLS => &[EXT_MODULES, MODULE_TRIGGERS, IMAGE_SWAP, NPATCH_KEYS],
         _ => return None,
     };
     Some(save_codec::PreviousLayout {
@@ -274,7 +362,8 @@ fn previous_layout(source: u32) -> Option<save_codec::PreviousLayout> {
 /// only its stock Arctic setting and latch. Keep both exactly as saved.
 pub fn migrate(bytes: &mut Vec<u8>) -> Result<(), MigrationError> {
     let target = snapshot_layout();
-    if SNAPSHOT_ENVELOPE_VERSION != MIGRATION_ENVELOPE_VERSION || target != BASE_PLAN_DEFENSE_CELLS
+    if SNAPSHOT_ENVELOPE_VERSION != MIGRATION_ENVELOPE_VERSION
+        || target != MODULES_SWAP_NPATCH_AND_DEFENSE_CELLS
     {
         return Err(MigrationError::UnsupportedTarget(target));
     }
@@ -408,7 +497,7 @@ mod tests {
         let error = migrate(&mut bytes).unwrap_err();
         assert_eq!(bytes, original);
         if SNAPSHOT_ENVELOPE_VERSION != MIGRATION_ENVELOPE_VERSION
-            || snapshot_layout() != BASE_PLAN_DEFENSE_CELLS
+            || snapshot_layout() != MODULES_SWAP_NPATCH_AND_DEFENSE_CELLS
         {
             assert!(matches!(error, MigrationError::UnsupportedTarget(_)));
             return;
@@ -470,6 +559,13 @@ mod tests {
         let mut bytes = save_codec::serialize(&image).unwrap();
         let after_image = 8 + image.image().len();
         assert_eq!(&bytes[after_image..after_image + 3], &[1, 0, 1]);
+        // The writer this layout names held neither the Ares alternate-theater
+        // flag nor the Phobos image swap, so its bytes carry neither. The swap
+        // is the tag byte in front of the model slots.
+        let tail = save_codec::serialize(&image.model_slots).unwrap();
+        let swap_tag = bytes.len() - tail.len() - 1;
+        assert_eq!(bytes[swap_tag], 0);
+        bytes.remove(swap_tag);
         bytes.remove(after_image + 1);
         let mut offsets = Vec::new();
         let (restored, rest) = save_codec::deserialize_previous::<ObjectImageState>(
@@ -480,7 +576,7 @@ mod tests {
         .unwrap();
         assert_eq!(restored, image);
         assert!(rest.is_empty());
-        assert_eq!(offsets, [(after_image + 1, 1)]);
+        assert_eq!(offsets, [(after_image + 1, 1), (swap_tag - 1, 1)]);
     }
 
     #[test]

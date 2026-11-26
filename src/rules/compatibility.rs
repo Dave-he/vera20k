@@ -6,16 +6,16 @@
 //! catalogs added later belong to the retained Rules registry, not a second
 //! mutable policy on RuleSet or Simulation.
 //!
-//! The capabilities are orthogonal: Phobos, NPatch, VeraX and the NPBUG
+//! The capabilities that still compile are orthogonal: Phobos and the NPBUG
 //! bug-fix extension compile independently and combine freely, so every
 //! combination needs its own wire variant. A feature added under one capability
-//! must keep working when the others are compiled in — the modes differ in what
+//! must keep working when the other is compiled in — the modes differ in what
 //! they read, never in whether a feature is available.
 //!
-//! Ares was such a capability until every build played it (`RuleSet::ares`),
-//! and VeraX until every build held it and its data switched it on
-//! (`RuleSet::verax`). Their variants stay, so a save from an `ares` or a
-//! `verax` build still reads and is refused; no build records them any more.
+//! Ares, NPatch and VeraX were such capabilities until every build played
+//! them (`RuleSet::ares`, `RuleSet::npatch`, `RuleSet::verax`). Their
+//! variants stay, so a save from an `ares`, `npatch` or `verax` build still
+//! reads and is refused; no build records them any more.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum RulesCompatibility {
@@ -56,13 +56,14 @@ pub enum RulesCompatibility {
 
 impl Default for RulesCompatibility {
     fn default() -> Self {
-        // No build records Ares or VeraX any more: both switch on from a
-        // game's data (`RuleSet::ares`, `RuleSet::verax`), so their variants
-        // stay for saves that recorded them, and every build refuses those.
+        // No build records Ares, NPatch or VeraX any more: all three switch
+        // on from a game's data (`RuleSet::ares`, `RuleSet::npatch`,
+        // `RuleSet::verax`), so their variants stay for saves that recorded
+        // them, and every build refuses those.
         Self::from_capabilities(
             false,
             super::PHOBOS_ENABLED,
-            super::NPATCH_ENABLED,
+            false,
             false,
             super::NPBUG_ENABLED,
         )
@@ -163,7 +164,8 @@ impl RulesCompatibility {
         )
     }
 
-    /// Whether this recorded mode includes the NPatch capability.
+    /// Whether this recorded mode includes the NPatch capability (only a
+    /// build from before NPatch became a per-game switch records it).
     pub const fn has_npatch(self) -> bool {
         matches!(
             self,
