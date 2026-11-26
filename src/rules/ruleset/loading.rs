@@ -41,10 +41,12 @@ impl RuleSet {
 
     /// Project processed Rules into the game's rules, the Ares way when their
     /// registry reads that way (`ares_switch::ares_way`). The projection's
-    /// reader lookups are recorded, so the per-game Ares, Phobos and Kratos
-    /// switches it stores ([`Self::ares`], [`Self::phobos`], [`Self::kratos`])
-    /// also count the keys only these readers read. VeraX's own switch
-    /// ([`Self::verax`]) is a VeraX key the game's Rules hold.
+    /// reader lookups are recorded, so the per-game Ares, Phobos, Kratos,
+    /// NPatch and VeraX switches it stores ([`Self::ares`], [`Self::phobos`],
+    /// [`Self::kratos`], [`Self::npatch`], [`Self::verax`]) also count the
+    /// keys only these readers read. NPatch's own switch counts its processed
+    /// rules layers' key reads; VeraX's own switch ([`Self::verax`]) is a
+    /// VeraX key the game's Rules hold.
     pub fn from_processed_rules(processed: &ProcessedRulesLayers) -> Result<Self, RulesError> {
         let _ares_way = crate::rules::ares_switch::read_ares_way(
             processed.native_registry_state().reads_ares_way(),
@@ -55,6 +57,7 @@ impl RuleSet {
         rules.ares_kept_off = processed.ares_inputs().kept_off(&reads);
         rules.phobos = crate::rules::phobos_switch::decide(&reads);
         rules.kratos = processed.kratos_inputs().decide(&reads);
+        rules.npatch = processed.npatch_inputs().decide(&reads);
         rules.verax = crate::rules::verax_switch::decide(processed.ini());
         rules.reads_ares_way = processed.native_registry_state().reads_ares_way();
         rules.apply_ra2(crate::util::ra2_launch::enabled());
@@ -1917,6 +1920,7 @@ impl RuleSet {
             countries,
             country_ids: country_side_registry.country_ids,
             country_indices: country_side_registry.country_indices,
+            country_name_indices: country_side_registry.country_name_indices,
             side_ids: country_side_registry.side_ids,
             personalities,
             vera_ai: crate::rules::vera_ai::VeraAiPolicy::from_ini(
@@ -1993,6 +1997,7 @@ impl RuleSet {
             ares_kept_off: false,
             phobos: false,
             kratos: false,
+            npatch: false,
             ra2: false,
             verax: false,
             reads_ares_way: false,
@@ -2142,6 +2147,7 @@ struct ProjectedCountrySideRegistry {
     rules: HashMap<String, CountryRules>,
     country_ids: Vec<String>,
     country_indices: LookupMap<String, CountryIdx>,
+    country_name_indices: LookupMap<String, CountryIdx>,
     side_ids: Vec<String>,
     side_extensions: Vec<crate::rules::ares_side_extension::AresSideExtension>,
     side_indices: HashMap<String, SideIdx>,
@@ -2175,6 +2181,7 @@ fn project_country_side_registry<'a>(
     }
     let mut country_ids = Vec::new();
     let mut country_indices = LookupMap::default();
+    let mut country_name_indices = LookupMap::default();
     let mut country_sides = Vec::new();
     let mut rules = HashMap::new();
     for (id, section, color, side, parent, veteran) in countries {
@@ -2191,7 +2198,7 @@ fn project_country_side_registry<'a>(
             assert!(index < side_ids.len(), "retained Country Side exists");
             SideIdx(u8::try_from(side).expect("SIDE_LIMIT keeps the Side registry within u8"))
         }));
-        rules.entry(id.to_owned()).or_insert_with(|| {
+        let fields = rules.entry(id.to_owned()).or_insert_with(|| {
             let mut fields = CountryRules::from_ini_section(section);
             fields.color_scheme = color;
             fields.parent_country = parent.to_owned();
@@ -2203,11 +2210,21 @@ fn project_country_side_registry<'a>(
             }
             fields
         });
+        // FindIndexOfName's scan stops at the first Country whose alias or
+        // identity matches, so an earlier Country keeps a name a later one
+        // repeats. The alias is the one the scan reads for this identity
+        // (`RuleSet::country_lookup_members`).
+        for name in fields.name.as_deref().into_iter().chain([id]) {
+            country_name_indices
+                .entry(name.to_ascii_uppercase())
+                .or_insert(index);
+        }
     }
     ProjectedCountrySideRegistry {
         rules,
         country_ids,
         country_indices,
+        country_name_indices,
         side_ids,
         side_extensions,
         side_indices,
@@ -2266,6 +2283,7 @@ impl RuleSet {
         self.countries = projection.rules;
         self.country_ids = projection.country_ids;
         self.country_indices = projection.country_indices;
+        self.country_name_indices = projection.country_name_indices;
         self.side_ids = projection.side_ids;
         self.side_extensions = projection.side_extensions;
         self.side_indices = projection.side_indices;

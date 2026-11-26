@@ -16,7 +16,17 @@ pub(crate) fn commit_prepared_load(
     // radar FIFO publishes a service input between frames.
     crate::app::match_runtime::sim_tick::finish_threaded_frame(state);
     let wall_ms = crate::app::match_runtime::frame_pacer::wall_clock_ms();
-    crate::app::radar_movie::retire(state, wall_ms);
+    crate::app::radar_movie::retire(
+        &state.platform,
+        &state.renderer,
+        &state.diag,
+        &state.frontend,
+        &mut state.match_state,
+        &state.process_assets,
+        &mut state.audio,
+        &state.persistence,
+        wall_ms,
+    );
     crate::app::chrono_screen::retire(
         &state.frontend.screen,
         &mut state.match_state,
@@ -45,7 +55,11 @@ pub(crate) fn commit_prepared_load(
     );
     // The outgoing replay closes before the process dummy and runtime change.
     crate::app::match_runtime::sim_tick::close_replay_segment_for_new_timeline(state);
-    crate::app::reset_scenario_exit_runtime(state);
+    crate::app::reset_scenario_exit_runtime(
+        &mut state.frontend,
+        &mut state.match_state,
+        &mut state.audio,
+    );
     let committed = prepared.commit_into(
         &mut state.process_assets,
         &state.frontend.frontend_main_rng,
@@ -91,7 +105,11 @@ pub(crate) fn commit_prepared_load(
         // after shell admission, including a successful Load Saved Game.
         // The previous match's Abort may have cleared it at 0x0048CAA1.
         state.match_state.match_presentation.modal_latch = true;
-        crate::app::loading::pump::present_game_mode_blank(state);
+        crate::app::loading::pump::present_game_mode_blank(
+            &state.platform,
+            &state.renderer,
+            &state.match_state,
+        );
     }
 
     // Load_Game 0x0067E4E8 restores GameMode from the save header; VERA's
@@ -158,14 +176,22 @@ pub(crate) fn commit_prepared_load(
         theater_ext,
     };
     crate::app::loading::transitions::install_world_presentation(
-        state,
+        &state.platform,
+        &mut state.renderer,
+        &mut state.frontend,
+        &mut state.match_state,
+        &mut state.process_assets,
+        &state.persistence,
         map,
         committed.presentation,
     );
     // MouseLoad5BE092 restores the radar as saved, TacticalMapAvailable
     // included, so the rebuilt radar starts from the loaded House's radar.
     state.match_state.match_presentation.has_radar =
-        crate::app::presentation::building_anim::local_has_radar(state);
+        crate::app::presentation::building_anim::local_has_radar(
+            &state.frontend,
+            &state.match_state,
+        );
     state.match_state.match_presentation.loaded_radar_housing = committed.radar_housing;
     // Load_Game's Set_View_Dimensions (`0x0067E7F9`): Init `0x005D3A60`
     // deletes every row and an open edit, and SetWidth `0x005D4AD0` leaves
@@ -191,7 +217,8 @@ pub(crate) fn commit_prepared_load(
     // MouseLoad5BE092 restores incoming Power; SidebarNoInit6A4F89/94
     // rearms only slide. Sample after world adoption so diagnostic time uses
     // the incoming tick too. Rejected preparation never reaches this commit.
-    let power_ms = state.radar_presentation_ms();
+    let power_ms =
+        crate::app::diagnostics::state::radar_presentation_ms(&state.diag, &state.match_state);
     let mut power = committed.power_bar_anim;
     power.reanchor_after_load(power_ms);
     state.match_state.match_presentation.power_bar_anim = power;
@@ -310,7 +337,16 @@ pub(crate) fn commit_prepared_load(
         .match_state
         .network_quality
         .reset(state.platform.frame_pacer.total_render_deferrals());
-    crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
+    crate::app::presentation::sidebar_render::refresh_sidebar_projection(
+        &state.platform,
+        &state.renderer,
+        &state.diag,
+        &state.frontend,
+        &mut state.match_state,
+        &state.process_assets,
+        &mut state.audio,
+        &state.persistence,
+    );
     // The incoming chrome owns the footer allowance; refresh its layout
     // before initializing derived geometry, including on a cold/different-side
     // load. No Power AI visit or retained-band clamp belongs in this phase.

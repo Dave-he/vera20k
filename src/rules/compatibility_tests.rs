@@ -160,13 +160,17 @@ fn all_capability_combinations_round_trip_and_describe_themselves() {
         "no build records Ares any more"
     );
     assert!(
+        !RulesCompatibility::default().has_npatch(),
+        "NPatch is a per-game switch, not a build capability"
+    );
+    assert!(
         !RulesCompatibility::default().has_verax(),
         "no build records VeraX any more"
     );
     let other = RulesCompatibility::from_capabilities(
         true,
         !PHOBOS_ENABLED,
-        !crate::rules::NPATCH_ENABLED,
+        true,
         true,
         !crate::rules::NPBUG_ENABLED,
     );

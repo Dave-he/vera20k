@@ -57,10 +57,24 @@ The `8d55b4a73` writer's layout `0xF6127DC1` predates Tiberian Sun's
 BounceSound and ExpireSound; its animation types convert with neither sound.
 The `8852f7a76` writer's layout `0x9441E8D8` predates the Kratos infantry firing
 offsets. Its saves convert with Kratos off, as those matches played. The
-`bc55c35e7` writer's layout `0x9F1BD701` predates Tiberian Sun webs; its
-infantry convert with no web. The `30e9a0f38` writer's layout `0xF215BF3A`
-converts with an empty base plan defense-cell vector. The `12fe1a5ee` writer
-stores that vector (`HouseClass+0x5738`) and uses layout `0xA534937B`.
+`bc55c35e7` writer's layout `0x9F1BD701` predates Tiberian Sun webs and
+the processed rules' NPatch key reads; its saves convert with no web and the
+switch off, as those matches played. The `30e9a0f38` writer's layout
+`0xF215BF3A` predates the Wasm extension modules, Phobos ArtImageSwap and the
+NPatch reads; its saves convert with no module, no swapped image and the
+switch off. Four later writers each stored part of these: the `a33fcac81`
+writer's layout `0xE18EA373` holds the modules, main's writer from #5205,
+layout `0x8C73B1B3`, the swap, the `2e39b88dd` writer's layout `0xB65C0664`
+both, and the `2e67ebaa8` writer's layout `0xE5279FB2` only the NPatch reads.
+Each converts with its missing parts empty; without the reads, the switch
+stays off, as those matches played. No frozen save holds `0x8C73B1B3`. The
+`fb29ff473` writer's layout `0xBA51A42C` holds all three.
+
+This fork's writer adds the base plan's defense cells (`HouseClass+0x5738`,
+read by `BaseClass::Load` at 0x0042EE30) to that shape: the `12fe1a5ee`
+writer's layout `0xA534937B` stores that vector beside the webs and converts
+with no module, no swapped image and no NPatch reads, and this build's writer
+stores it beside all three.
 
 Run the menu and compatibility tests with this command.
 

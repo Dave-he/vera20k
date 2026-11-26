@@ -2,14 +2,19 @@
 //!
 //! Split from the presentation render path. Part of the app layer — may depend on everything.
 
-use crate::app::AppState;
+use crate::app::frontend::state::FrontendState;
 use crate::app::input::cursor::{
     CursorTargets, current_cursor_feedback_kind, cursor_id_for_feedback,
 };
 use crate::app::input::entity_pick::HoverObject;
+use crate::app::match_runtime::state::MatchState;
+use crate::app::persistence::PersistenceState;
 use crate::app::presentation::frame::{ObjectRecord, PresentationFrame};
 use crate::app::presentation::instances::in_view;
 use crate::app::presentation::state::MatchPresentationState;
+use crate::app::process_assets::ProcessAssets;
+use crate::app::renderer_state::RendererState;
+use crate::app::state::PlatformState;
 use crate::app::types::{CursorId, HoverTargetKind, SoftwareCursorSequence};
 use crate::assets::csf_file::{CsfArg, format_csf};
 use crate::map::entities::EntityCategory;
@@ -526,9 +531,8 @@ fn health_strip_widened(
     let Some(viewer) = player else {
         return true;
     };
-    crate::app::presentation::instances::cell_shows_objects(
+    sim.fog().shows_objects_to(
         viewer,
-        sim.fog(),
         entity.position.rx(),
         entity.position.ry(),
         sim.session().game_options().fog_of_war,
@@ -1052,36 +1056,40 @@ pub(crate) fn build_control_group_status_render_instances(
     parents
 }
 
-/// AppState adapter for the production tactical UI build. `hovered_entity_id`
-/// is this draw's [`health_hover_target`] for `local_owner`.
+/// The client owners' adapter for the production tactical UI build.
+/// `hovered_entity_id` is this draw's [`health_hover_target`] for
+/// `local_owner`.
 pub(crate) fn build_control_group_status_instances(
-    state: &AppState,
+    platform: &PlatformState,
+    renderer: &RendererState,
+    frontend: &FrontendState,
+    match_state: &MatchState,
+    persistence: &PersistenceState,
     local_owner: Option<&str>,
     hovered_entity_id: Option<u64>,
     sw: f32,
     sh: f32,
 ) -> BTreeMap<u64, StatusTextOverlayInstances> {
     let (Some(sim), Some(frame), Some(rules)) = (
-        state
-            .match_state
+        match_state
             .sim_runtime
             .presentation()
             .map(|runtime| &runtime.simulation),
-        state.match_state.sim_runtime.frame(),
-        state.rules(),
+        match_state.sim_runtime.frame(),
+        crate::app::state::active_rules(frontend, match_state),
     ) else {
         return BTreeMap::new();
     };
     let local_owner_id = local_owner.and_then(|name| sim.interner().get(name));
     let (tactical_x, tactical_y, tactical_width, tactical_height) =
         crate::app::input::camera::tactical_viewport_px(
-            &state.platform,
-            &state.renderer,
-            &state.frontend.screen,
-            &state.match_state.match_presentation,
-            &state.persistence,
+            platform,
+            renderer,
+            &frontend.screen,
+            &match_state.match_presentation,
+            persistence,
         );
-    let zoom = state.match_state.input.zoom_level;
+    let zoom = match_state.input.zoom_level;
     let tactical_clip = [
         (tactical_x as f32 / zoom).round() as i32,
         (tactical_y as f32 / zoom).round() as i32,
@@ -1094,14 +1102,11 @@ pub(crate) fn build_control_group_status_instances(
         frame.control_groups(),
         hovered_entity_id,
         local_owner_id,
-        state.match_state.sandbox_full_visibility,
-        &state.match_state.match_presentation.house_color_map,
+        match_state.sandbox_full_visibility,
+        &match_state.match_presentation.house_color_map,
         &rules.house_color_ramps,
-        &state.renderer.bit_font,
-        [
-            state.match_state.input.camera_x,
-            state.match_state.input.camera_y,
-        ],
+        &renderer.bit_font,
+        [match_state.input.camera_x, match_state.input.camera_y],
         sw,
         sh,
         tactical_clip,
@@ -1164,9 +1169,8 @@ pub(crate) fn build_building_status_render_instances(
         // building the player cannot see draws none: a timer over the shroud
         // would give away a silo scouting has not found. The lines were
         // captured with the frame, so this pass reads no simulation state.
-        let visible = crate::app::presentation::instances::cell_shows_objects(
+        let visible = sim.fog().shows_objects_to(
             current_house_id,
-            sim.fog(),
             entity.position.rx(),
             entity.position.ry(),
             sim.session().game_options().fog_of_war,
@@ -1432,22 +1436,27 @@ enum BuildingStatusText {
     Fake,
 }
 
-/// AppState supplies current resources and the existing tactical viewport;
+/// The client owners supply current resources and the existing tactical viewport;
 /// simulation owners supply primary identity and retained power, and the
 /// per-frame body plan supplies the current opportunities.
 pub(crate) fn build_building_status_instances(
-    state: &AppState,
+    platform: &PlatformState,
+    renderer: &RendererState,
+    frontend: &FrontendState,
+    match_state: &MatchState,
+    process_assets: &ProcessAssets,
+    persistence: &PersistenceState,
     body_opportunities: &BTreeSet<u64>,
 ) -> BuildingStatusTextInstances {
     let (Some(runtime), Some(rules), Some(csf)) = (
-        state.match_state.sim_runtime.presentation(),
-        state.rules(),
-        state.process_assets.csf.as_ref(),
+        match_state.sim_runtime.presentation(),
+        crate::app::state::active_rules(frontend, match_state),
+        process_assets.csf.as_ref(),
     ) else {
         return BuildingStatusTextInstances::default();
     };
     let sim = &runtime.simulation;
-    let Some(frame) = state.match_state.sim_runtime.frame() else {
+    let Some(frame) = match_state.sim_runtime.frame() else {
         return BuildingStatusTextInstances::default();
     };
     // The local player comes from the world this frame draws, not from
@@ -1458,34 +1467,28 @@ pub(crate) fn build_building_status_instances(
         return BuildingStatusTextInstances::default();
     };
     let (left, top, width, height) = crate::app::input::camera::tactical_viewport_px(
-        &state.platform,
-        &state.renderer,
-        &state.frontend.screen,
-        &state.match_state.match_presentation,
-        &state.persistence,
+        platform,
+        renderer,
+        &frontend.screen,
+        &match_state.match_presentation,
+        persistence,
     );
-    let zoom = state.match_state.input.zoom_level;
+    let zoom = match_state.input.zoom_level;
     build_building_status_render_instances(
         sim,
         frame,
         body_opportunities,
         current_house,
-        &state.match_state.match_presentation.house_color_map,
+        &match_state.match_presentation.house_color_map,
         &rules.house_color_ramps,
-        &state.renderer.bit_font,
+        &renderer.bit_font,
         csf,
-        [
-            state.match_state.input.camera_x,
-            state.match_state.input.camera_y,
-        ],
+        [match_state.input.camera_x, match_state.input.camera_y],
         zoom,
         [left as i32, top as i32, width as i32, height as i32],
         rules,
-        state
-            .match_state
-            .match_presentation
-            .superweapon_building_timers,
-        state.match_state.match_presentation.convenience_help,
+        match_state.match_presentation.superweapon_building_timers,
+        match_state.match_presentation.convenience_help,
     )
 }
 
@@ -3047,10 +3050,12 @@ fn scale_pip_rows(
     pips
 }
 
-/// Resolve the active cursor id and sequence for the current game state.
-/// Maps game-state intent → CursorId → loaded sequence via HashMap lookup.
-/// The id travels with the sequence because the animation phase is keyed on it —
-/// changing shape restarts the sequence at frame 0.
+/// Resolve the active cursor id for the current game state, noting it as the
+/// shown cursor. Maps game-state intent → CursorId → loaded sequence via
+/// HashMap lookup: `None` when no sequence is loaded for it. The caller reads
+/// that sequence with [`loaded_cursor_sequence`]; the id travels with the
+/// sequence because the animation phase is keyed on it — changing shape
+/// restarts the sequence at frame 0.
 ///
 /// This per-frame resolution stands in for MouseClass's stored shapes. In
 /// gamemd the hover cursor is the *default* one (`SetCursorFromAction`
@@ -3061,35 +3066,90 @@ fn scale_pip_rows(
 /// start `DefaultCursor` at row 0. Re-deriving the shape every frame shows the
 /// same row once its owner re-issues it; `GetDefaultCursor` (`0x0040D280`,
 /// slot +0xA0) has no display caller among the 47 `call [reg+0xA0]` sites.
-fn active_cursor_sequence<'a>(
-    state: &'a AppState,
+fn active_cursor_id(
+    platform: &PlatformState,
+    renderer: &RendererState,
+    frontend: &FrontendState,
+    match_state: &mut MatchState,
+    persistence: &PersistenceState,
     targets: &CursorTargets,
-) -> Option<(CursorId, &'a SoftwareCursorSequence)> {
-    let cursor = state
-        .match_state
-        .match_presentation
-        .software_cursor
-        .as_ref()?;
-    let kind = current_cursor_feedback_kind(state, targets);
-    state.match_state.input.note_shown_cursor(kind);
+) -> Option<CursorId> {
+    match_state.match_presentation.software_cursor.as_ref()?;
+    let kind = current_cursor_feedback_kind(
+        platform,
+        renderer,
+        frontend,
+        match_state,
+        persistence,
+        targets,
+    );
+    match_state.input.note_shown_cursor(kind);
     let id: CursorId = kind
         .and_then(cursor_id_for_feedback)
         .unwrap_or(CursorId::Default);
-    cursor.get(id).map(|sequence| (id, sequence))
+    loaded_cursor_sequence(&match_state.match_presentation, id).map(|_| id)
+}
+
+/// The loaded software cursor sequence for `id`.
+fn loaded_cursor_sequence(
+    presentation: &MatchPresentationState,
+    id: CursorId,
+) -> Option<&SoftwareCursorSequence> {
+    presentation.software_cursor.as_ref()?.get(id)
 }
 
 /// The cursor id the production draw shows now. Like a draw, it notes the
 /// shown cursor, so a held button over the sidebar keeps it.
-pub(crate) fn shown_cursor_id(state: &AppState) -> Option<CursorId> {
-    active_cursor_sequence(state, &CursorTargets::read(state)).map(|(id, _)| id)
+pub(crate) fn shown_cursor_id(
+    platform: &PlatformState,
+    renderer: &RendererState,
+    frontend: &FrontendState,
+    match_state: &mut MatchState,
+    persistence: &PersistenceState,
+) -> Option<CursorId> {
+    let targets = CursorTargets::read(platform, frontend, match_state);
+    active_cursor_id(
+        platform,
+        renderer,
+        frontend,
+        match_state,
+        persistence,
+        &targets,
+    )
 }
 
 /// Observation of the same cursor selection used by the production draw.
 /// Map captures admit only a static arrow, so cursor wall time cannot alter it.
-pub(crate) fn static_default_cursor(state: &AppState) -> bool {
-    state.use_software_cursor()
-        && active_cursor_sequence(state, &CursorTargets::read(state))
-            .is_some_and(|(id, sequence)| id == CursorId::Default && sequence.interval_ms == 0)
+pub(crate) fn static_default_cursor(
+    platform: &PlatformState,
+    renderer: &RendererState,
+    frontend: &FrontendState,
+    match_state: &mut MatchState,
+    persistence: &PersistenceState,
+) -> bool {
+    if !crate::app::state::use_software_cursor(
+        platform,
+        renderer,
+        frontend,
+        match_state,
+        persistence,
+    ) {
+        return false;
+    }
+    let targets = CursorTargets::read(platform, frontend, match_state);
+    active_cursor_id(
+        platform,
+        renderer,
+        frontend,
+        match_state,
+        persistence,
+        &targets,
+    )
+    .is_some_and(|id| {
+        id == CursorId::Default
+            && loaded_cursor_sequence(&match_state.match_presentation, id)
+                .is_some_and(|sequence| sequence.interval_ms == 0)
+    })
 }
 
 /// The software cursor frame a draw shows. Its sprite and its texture come
@@ -3102,41 +3162,53 @@ pub(crate) struct SoftwareCursorDraw {
 
 /// The draw's cursor sprite, for its cursor `targets`.
 pub(crate) fn build_software_cursor_instances(
-    state: &AppState,
+    platform: &PlatformState,
+    renderer: &RendererState,
+    frontend: &FrontendState,
+    match_state: &mut MatchState,
+    persistence: &PersistenceState,
     targets: &CursorTargets,
 ) -> (Vec<SpriteInstance>, Option<SoftwareCursorDraw>) {
-    if !state.use_software_cursor() || !state.match_state.input.cursor_visibility.is_visible() {
+    if !crate::app::state::use_software_cursor(
+        platform,
+        renderer,
+        frontend,
+        match_state,
+        persistence,
+    ) || !match_state.input.cursor_visibility.is_visible()
+    {
         return (Vec::new(), None);
     }
-    let Some((id, sequence)) = active_cursor_sequence(state, targets) else {
+    let Some(id) = active_cursor_id(
+        platform,
+        renderer,
+        frontend,
+        match_state,
+        persistence,
+        targets,
+    ) else {
+        return (Vec::new(), None);
+    };
+    let Some(sequence) = loaded_cursor_sequence(&match_state.match_presentation, id) else {
         return (Vec::new(), None);
     };
     // Row 0 is still the shape shown over a node, so its phase steps:
     // leaving the node restarts the next cursor's animation.
-    let Some(animated) = state
-        .match_state
-        .input
-        .software_cursor_frame_index(id, sequence)
-    else {
+    let Some(animated) = match_state.input.software_cursor_frame_index(id, sequence) else {
         return (Vec::new(), None);
     };
     let (id, sequence, index) = if id == CursorId::Default
         && crate::app::input::planning_mode::node_at_cursor(
-            &state.platform,
-            &state.renderer,
-            &state.frontend,
-            &state.match_state,
-            &state.persistence,
+            platform,
+            renderer,
+            frontend,
+            match_state,
+            persistence,
         )
         .is_some()
     {
         //63AC41..4E selects row0's static small frame when only hovering.
-        let Some(cursor) = state
-            .match_state
-            .match_presentation
-            .software_cursor
-            .as_ref()
-        else {
+        let Some(cursor) = match_state.match_presentation.software_cursor.as_ref() else {
             return (Vec::new(), None);
         };
         let (small, frame) = cursor.planning_arrow();
@@ -3151,10 +3223,10 @@ pub(crate) fn build_software_cursor_instances(
         return (Vec::new(), None);
     };
     if crate::app::input::hardware_cursor::takes_cursor(
-        &state.platform,
-        &state.renderer,
-        &state.frontend.screen,
-        &state.match_state.input,
+        platform,
+        renderer,
+        &frontend.screen,
+        &match_state.input,
         id,
         index,
     ) {
@@ -3166,10 +3238,8 @@ pub(crate) fn build_software_cursor_instances(
     // Note: cursor_x/y are in screen space; camera offset is NOT applied (cursor is UI).
     let sprite = SpriteInstance {
         position: [
-            state.match_state.input.cursor_x + state.match_state.input.camera_x
-                - sequence.hotspot[0],
-            state.match_state.input.cursor_y + state.match_state.input.camera_y
-                - sequence.hotspot[1],
+            match_state.input.cursor_x + match_state.input.camera_x - sequence.hotspot[0],
+            match_state.input.cursor_y + match_state.input.camera_y - sequence.hotspot[1],
         ],
         size: [frame.width, frame.height],
         uv_origin: [0.0, 0.0],

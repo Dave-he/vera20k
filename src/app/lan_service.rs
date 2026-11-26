@@ -1218,7 +1218,10 @@ pub(crate) fn restart_lobby_visit(
 
 fn reject_setup_compatibility(state: &mut AppState, message: &str) {
     super::shell_lan::append_chat(
-        state,
+        &state.renderer,
+        &mut state.frontend,
+        &state.match_state,
+        &state.process_assets,
         crate::ui::lan_shell::LanChatLine {
             text: message.encode_utf16().collect(),
             color: u32::MAX,
@@ -1334,7 +1337,14 @@ fn direct(endpoint: SocketAddrV4) -> GlobalDestination {
 #[cfg(target_os = "android")]
 fn reopen_lobby_on_new_network(state: &mut AppState) {
     close(&state.frontend, &mut state.match_state);
-    open(state);
+    open(
+        &state.platform,
+        &state.renderer,
+        &mut state.frontend,
+        &mut state.match_state,
+        &state.process_assets,
+        &mut state.audio.sfx_player,
+    );
     if state.match_state.lan_service.is_some() {
         project_games(state);
         project_players(state);
@@ -1342,27 +1352,41 @@ fn reopen_lobby_on_new_network(state: &mut AppState) {
     log::info!("LAN network changed; announcing on the new Wi-Fi network");
 }
 
-pub(crate) fn open(state: &mut AppState) {
+pub(crate) fn open(
+    platform: &crate::app::PlatformState,
+    renderer: &crate::app::renderer_state::RendererState,
+    frontend: &mut crate::app::frontend::state::FrontendState,
+    match_state: &mut crate::app::match_runtime::state::MatchState,
+    process_assets: &crate::app::process_assets::ProcessAssets,
+    sfx_player: &mut Option<crate::audio::sfx::SfxPlayer>,
+) {
     // Every capture owns its service: scripted ones run without sockets, and
     // live ones install theirs before clicking Network (movies/lan/live.rs).
-    if state.platform.capture_client_size.is_some() {
+    if platform.capture_client_size.is_some() {
         return;
     }
-    if online_retirement_pending(&state.match_state) {
-        super::shell_lan::report_error(state, "VERA:WaitingForOnlineDeparture");
+    if online_retirement_pending(match_state) {
+        super::shell_lan::report_error(
+            renderer,
+            frontend,
+            match_state,
+            process_assets,
+            sfx_player,
+            "VERA:WaitingForOnlineDeparture",
+        );
         return;
     }
-    if state.match_state.lan_service.is_some() {
+    if match_state.lan_service.is_some() {
         return;
     }
     match LanService::open().and_then(|mut service| {
         service.start_io_pump()?;
         Ok(service)
     }) {
-        Ok(service) => state.match_state.lan_service = Some(service),
+        Ok(service) => match_state.lan_service = Some(service),
         Err(error) => {
             log::error!("LAN socket initialization failed: {error}");
-            report_ports_unavailable(state);
+            report_ports_unavailable(renderer, frontend, match_state, process_assets, sfx_player);
         }
     }
 }
@@ -1377,14 +1401,25 @@ pub(crate) fn unavailable(
 }
 
 /// Why the LAN lobby cannot host or join: its ports are taken.
-pub(crate) fn report_ports_unavailable(state: &mut AppState) {
+pub(crate) fn report_ports_unavailable(
+    renderer: &crate::app::renderer_state::RendererState,
+    frontend: &mut crate::app::frontend::state::FrontendState,
+    match_state: &crate::app::match_runtime::state::MatchState,
+    process_assets: &crate::app::process_assets::ProcessAssets,
+    sfx_player: &mut Option<crate::audio::sfx::SfxPlayer>,
+) {
+    let key = if frontend.native_shell_ui {
+        "TXT_UNABLE_TO_CONNECT"
+    } else {
+        "VERA:LanPortsUnavailable"
+    };
     super::shell_lan::report_error(
-        state,
-        if state.frontend.native_shell_ui {
-            "TXT_UNABLE_TO_CONNECT"
-        } else {
-            "VERA:LanPortsUnavailable"
-        },
+        renderer,
+        frontend,
+        match_state,
+        process_assets,
+        sfx_player,
+        key,
     );
 }
 
@@ -1656,28 +1691,29 @@ fn advance_departure(state: &mut AppState, now: u32, service_ok: bool) -> bool {
     true
 }
 
-pub(crate) fn request_setup_back(state: &mut AppState) -> anyhow::Result<()> {
+pub(crate) fn request_setup_back(
+    frontend: &mut crate::app::frontend::state::FrontendState,
+    match_state: &mut crate::app::match_runtime::state::MatchState,
+) -> anyhow::Result<()> {
     let now = super::match_runtime::frame_pacer::frame_bucket(
         super::match_runtime::frame_pacer::wall_clock_ms(),
     );
-    state
-        .match_state
+    match_state
         .lan_service
         .as_mut()
         .ok_or_else(|| anyhow::anyhow!("no LAN service"))?
-        .begin_departure(&state.match_state.session, DepartureReason::Back, now)?;
+        .begin_departure(&match_state.session, DepartureReason::Back, now)?;
     // LAN host Back (BC WndProc005DE520, original5DE733..5DE742) calls
     // Snapshot5ED400 before publishing result2. Preserve that same profile
     // before VERA's asynchronous departure lock makes teardown read-only.
-    if state
-        .frontend
+    if frontend
         .network_setup_protocol
         .as_ref()
         .is_some_and(|protocol| protocol.editable())
     {
-        super::shell_network_setup::remember_setup(&mut state.frontend, &state.match_state);
+        super::shell_network_setup::remember_setup(frontend, match_state);
     }
-    super::shell_network_setup::lock_lan_departure(&mut state.frontend.network_setup_protocol);
+    super::shell_network_setup::lock_lan_departure(&mut frontend.network_setup_protocol);
     Ok(())
 }
 
@@ -1717,7 +1753,13 @@ fn receive(state: &mut AppState, incoming: GlobalMessage, now: u32) -> anyhow::R
             state.match_state.session_mode() == SessionMode::Lan,
             "LAN map packet outside a LAN visit"
         );
-        return maps::receive(state, incoming.source, &incoming.payload);
+        return maps::receive(
+            state.platform.game_config.as_ref(),
+            &mut state.frontend,
+            &mut state.match_state,
+            incoming.source,
+            &incoming.payload,
+        );
     }
     if incoming
         .payload
@@ -1757,7 +1799,17 @@ fn receive(state: &mut AppState, incoming: GlobalMessage, now: u32) -> anyhow::R
         let message = crate::net::lan_messages::ingame::BeaconMessage::decode(&incoming.payload)?;
         if state.match_state.live_network.is_some() && state.match_state.sim_runtime.is_installed()
         {
-            super::match_runtime::beacons::receive(state, message.record());
+            super::match_runtime::beacons::receive(
+                &state.platform,
+                &state.renderer,
+                &state.diag,
+                &state.frontend,
+                &mut state.match_state,
+                &state.process_assets,
+                &mut state.audio.sfx_player,
+                &state.persistence,
+                message.record(),
+            );
         }
         return Ok(());
     }
@@ -1812,7 +1864,17 @@ fn receive(state: &mut AppState, incoming: GlobalMessage, now: u32) -> anyhow::R
                 None
             };
             if let Some(destroyed) = destroyed {
-                super::match_runtime::network_match::post_connection_line(state, destroyed);
+                super::match_runtime::network_match::post_connection_line(
+                    &state.platform,
+                    &state.renderer,
+                    &state.diag,
+                    &state.frontend,
+                    &mut state.match_state,
+                    &state.process_assets,
+                    &mut state.audio.sfx_player,
+                    &state.persistence,
+                    destroyed,
+                );
             }
             return Ok(());
         }
@@ -1823,7 +1885,19 @@ fn receive(state: &mut AppState, incoming: GlobalMessage, now: u32) -> anyhow::R
                 message.name(),
                 chat.color as i32,
             );
-            super::input::chat::receive_packet(state, &name, color, &chat.text());
+            super::input::chat::receive_packet(
+                &state.platform,
+                &state.renderer,
+                &state.diag,
+                &mut state.frontend,
+                &mut state.match_state,
+                &state.process_assets,
+                &mut state.audio.sfx_player,
+                &state.persistence,
+                &name,
+                color,
+                &chat.text(),
+            );
             return Ok(());
         }
         if let Some(taunt) = message.in_game_taunt_fields() {
@@ -1893,7 +1967,13 @@ fn receive(state: &mut AppState, incoming: GlobalMessage, now: u32) -> anyhow::R
             &message,
             &chat,
         ) {
-            super::shell_lan::append_chat(state, line);
+            super::shell_lan::append_chat(
+                &state.renderer,
+                &mut state.frontend,
+                &state.match_state,
+                &state.process_assets,
+                line,
+            );
             super::App::play_shell_rules_sound(
                 &state.frontend,
                 &state.match_state,
@@ -2042,35 +2122,16 @@ fn receive(state: &mut AppState, incoming: GlobalMessage, now: u32) -> anyhow::R
                 // The guest's pick is read by the same owner the room
                 // publication uses, so a pick the host accepts is a pick the
                 // room re-applies.
-                let (mut choices, mut observer) =
+                let (choices, observer) =
                     picks::decoded_player_choices(&text[1..], &launch.humans[source].slot)?;
-                // A guest's own seat and team pick keep to the room's teams.
-                let refused = state.match_state.session.admit_network_team(
-                    source,
-                    &mut choices,
-                    &mut observer,
-                );
-                let mut change = state
-                    .match_state
-                    .session
-                    .accept_lan_peer_choices(source, choices, observer)?;
-                change.options |= refused;
-                // A VERA room's guest who starts or stops watching changes
-                // rows: the roster, then the options, as WOL's R arm.
-                let mut deferred = Vec::new();
-                if change.roster && !options::publish_roster(&mut state.match_state)? {
-                    deferred.push(super::shell_network_setup::NetworkSetupRequest::PublishRoster);
-                }
-                if change.options && !options::publish_options(state)? {
-                    deferred.push(super::shell_network_setup::NetworkSetupRequest::PublishOptions);
-                }
-                state
-                    .match_state
-                    .lan_service
-                    .as_mut()
-                    .ok_or_else(closed_visit)?
-                    .deferred_setup
-                    .extend(deferred);
+                super::shell_network_setup::service_event(
+                    state,
+                    super::shell_network_setup::NetworkSetupEvent::PlayerChoices {
+                        index: source,
+                        choices,
+                        observer,
+                    },
+                )?;
             }
         }
         LanPayload::ReadyToGo => {

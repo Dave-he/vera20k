@@ -19,8 +19,8 @@ use crate::app::shell_network_setup::{HostOptions, NetworkSetupEvent};
 use crate::net::lan_messages::game_name_hash;
 use crate::net::lan_messages::setup;
 use crate::skirmish_launch::{
-    AiDifficulty, LaunchCountry, LaunchStartPosition, LaunchTeam, NETWORK_PLAYER_SLOT_COUNT,
-    SkirmishAiSlot, SkirmishLaunchMode, SkirmishLaunchOptions,
+    AiDifficulty, NETWORK_PLAYER_SLOT_COUNT, SkirmishAiSlot, SkirmishLaunchMode,
+    SkirmishLaunchOptions,
 };
 
 pub(super) fn publish_options(state: &mut AppState) -> Result<bool> {
@@ -147,8 +147,14 @@ pub(super) fn publish_options(state: &mut AppState) -> Result<bool> {
                     .match_state
                     .session
                     .accept_campaign_room(Some(room), game_speed)?;
-                super::maps::clear_campaign_transfer(state);
-                campaign_room::report_local_files(state, true)?;
+                super::maps::clear_campaign_transfer(&mut state.frontend, &mut state.match_state);
+                campaign_room::report_local_files(
+                    &state.renderer,
+                    &mut state.frontend,
+                    &mut state.match_state,
+                    &state.process_assets,
+                    true,
+                )?;
             }
         }
     }
@@ -417,7 +423,13 @@ fn apply_host_room(
             if let Err(error) = &verified {
                 log::info!("Campaign room files refused: {error:#}");
             }
-            campaign_room::report_local_files(state, verified.is_ok())?;
+            campaign_room::report_local_files(
+                &state.renderer,
+                &mut state.frontend,
+                &mut state.match_state,
+                &state.process_assets,
+                verified.is_ok(),
+            )?;
         }
         _ => anyhow::bail!("LAN host setup projection does not match its options body"),
     }
@@ -573,7 +585,9 @@ fn receive_host_options(
         TaggedOptionsBody::Stock { random_map, .. } => {
             super::maps::received_options(state, scope, random_map.clone())?
         }
-        TaggedOptionsBody::Campaign { .. } => super::maps::clear_campaign_transfer(state),
+        TaggedOptionsBody::Campaign { .. } => {
+            super::maps::clear_campaign_transfer(&mut state.frontend, &mut state.match_state)
+        }
     }
     state
         .match_state
@@ -934,7 +948,9 @@ fn parsed_roster(
 mod tests {
     use super::*;
     use crate::app::match_runtime::session::{NetworkReturnContext, NetworkRowKind};
-    use crate::skirmish_launch::SkirmishLaunchSession;
+    use crate::skirmish_launch::{
+        LaunchCountry, LaunchStartPosition, LaunchTeam, SkirmishLaunchSession,
+    };
     use std::net::Ipv4Addr;
 
     fn fixture(host: bool) -> MatchSession {

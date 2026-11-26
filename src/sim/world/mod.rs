@@ -125,6 +125,8 @@ mod fly_landing;
 mod fly_orders;
 mod fly_process;
 mod frame_error;
+#[cfg(all(test, tests_sim_world_c_o))]
+mod kratos_wreck_tests;
 mod lifecycle;
 mod master_frame;
 #[cfg(any(test, feature = "test-support"))]
@@ -1116,6 +1118,11 @@ pub struct Simulation {
     /// Serialized map trigger state, initialized and mutated by trigger_runtime.
     /// Remains installed while actions call other Simulation mechanisms.
     pub(crate) trigger_runtime: Forked<TriggerRuntime>,
+    /// Loaded Wasm extension modules (`sim::ext_modules`), saved with their
+    /// memory and globals and instantiated again by `restore_ext_modules`.
+    /// Not a [`Forked`] field: a live module instance cannot be copied, so a
+    /// turn run on a fork of the world must not call a module.
+    pub(crate) ext_modules: crate::sim::ext_modules::ExtModules,
 }
 
 #[cfg(any(test, feature = "test-support"))]
