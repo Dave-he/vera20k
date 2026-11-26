@@ -1522,11 +1522,9 @@ impl ReplayPlayback {
 }
 
 fn prepare_authored_replay_world(sim: &mut Simulation) {
-    sim.batch_path_searches();
-    sim.batch_target_scans();
-    sim.present_effect_anims();
-    sim.separate_turn_streams(true);
-    sim.sleep_idle_objects_in_match();
+    // The same handoff a match's start takes ([`Simulation::begin_match_handoff`]):
+    // one owner for the turn streams, the scans and the effect anims.
+    sim.begin_match_handoff();
 }
 
 impl ReplayRunner {
